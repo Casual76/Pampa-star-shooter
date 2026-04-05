@@ -1,0 +1,21 @@
+{
+    "app": {
+        "id": "Pampa-star-shooter",
+        "name": "Pampa star shooter",
+        "description": "",
+        "packageName": "",
+        "iconUrl": "",
+        "category": "Giochi",
+        "developer": "Pampa",
+        "screenshots": [],
+        "repository": {
+            "repoOwner": "Casual76",
+            "repoName": "Pampa-star-shooter",
+            "manifestPath": "manifest.json",
+            "ref": ""
+        },
+        "stable": null,
+        "beta": null,
+        "history": []
+    }
+}
