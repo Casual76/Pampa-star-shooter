@@ -1,0 +1,791 @@
+package com.antigravity.pampastarshooter.ui
+
+import android.view.ViewGroup.LayoutParams.MATCH_PARENT
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.FlashOn
+import androidx.compose.material.icons.rounded.Security
+import androidx.compose.material.icons.rounded.TripOrigin
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import com.antigravity.pampastarshooter.AppContainer
+import com.antigravity.pampastarshooter.core.engine.PampaGameEngine
+import com.antigravity.pampastarshooter.core.model.*
+import com.antigravity.pampastarshooter.game.android.GameSurfaceView
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlin.math.min
+import kotlin.math.sqrt
+
+@Composable
+fun GameScreen(
+    container: AppContainer,
+    profile: PlayerProfile,
+    settings: GameSettings,
+    onExit: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    var frame by remember { mutableStateOf(FrameSnapshot()) }
+    var result by remember { mutableStateOf<RunResult?>(null) }
+    var surfaceView by remember { mutableStateOf<GameSurfaceView?>(null) }
+    var movement by remember { mutableStateOf(Vector2.Zero) }
+    var dashTick by remember { mutableIntStateOf(0) }
+    var pulseTick by remember { mutableIntStateOf(0) }
+    var shieldTick by remember { mutableIntStateOf(0) }
+    var mineTick by remember { mutableIntStateOf(0) }
+    var pauseTick by remember { mutableIntStateOf(0) }
+    var resumeTick by remember { mutableIntStateOf(0) }
+    var rerollTick by remember { mutableIntStateOf(0) }
+    var selectedUpgrade by remember { mutableStateOf<Int?>(null) }
+    var runSeed by remember { mutableLongStateOf(java.lang.System.currentTimeMillis()) }
+
+    DisposableEffect(Unit) {
+        onDispose { surfaceView?.releaseSession() }
+    }
+
+    LaunchedEffect(surfaceView, runSeed, profile.selectedShipId, settings.hudLayout) {
+        surfaceView?.startRun(
+            engine = PampaGameEngine(container.contentRepository),
+            config = RunConfig(
+                shipId = profile.selectedShipId,
+                seed = runSeed,
+                modifiers = emptyList(),
+                hudLayout = settings.hudLayout,
+            ),
+            profile = profile,
+        )
+        result = null
+    }
+
+    LaunchedEffect(surfaceView) {
+        var sentDash = 0
+        var sentPulse = 0
+        var sentShield = 0
+        var sentMine = 0
+        var sentPause = 0
+        var sentResume = 0
+        var sentReroll = 0
+        while (isActive) {
+            val currentSelection = selectedUpgrade
+            surfaceView?.updateInput(
+                InputSnapshot(
+                    movement = movement,
+                    dashPressed = dashTick != sentDash,
+                    pulsePressed = pulseTick != sentPulse,
+                    shieldPressed = shieldTick != sentShield,
+                    minePressed = mineTick != sentMine,
+                    pausePressed = pauseTick != sentPause,
+                    resumePressed = resumeTick != sentResume,
+                    rerollPressed = rerollTick != sentReroll,
+                    selectedUpgradeIndex = currentSelection,
+                ),
+            )
+            sentDash = dashTick
+            sentPulse = pulseTick
+            sentShield = shieldTick
+            sentMine = mineTick
+            sentPause = pauseTick
+            sentResume = resumeTick
+            sentReroll = rerollTick
+            if (currentSelection != null) selectedUpgrade = null
+            delay(16)
+        }
+    }
+
+    LaunchedEffect(settings, surfaceView) {
+        surfaceView?.updateSettings(settings)
+        container.audioController.updateSettings(settings)
+        container.hapticsController.updateSettings(settings)
+    }
+
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black),
+    ) {
+        val isLandscape = maxWidth > maxHeight
+        val chromePadding = if (isLandscape) 18.dp else 14.dp
+
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = {
+                GameSurfaceView(context).apply {
+                    layoutParams = android.view.ViewGroup.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+                    bindControllers(container.audioController, container.hapticsController)
+                    updateSettings(settings)
+                    onSnapshot = { snapshot -> frame = snapshot }
+                    onRunFinished = { finished ->
+                        result = finished
+                        scope.launch {
+                            container.profileRepository.applyRunResult(finished)
+                            container.historyRepository.record(finished.historyEntry)
+                        }
+                    }
+                    surfaceView = this
+                }
+            },
+            update = { view ->
+                view.updateSettings(settings)
+                surfaceView = view
+            },
+        )
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .systemBarsPadding()
+                .padding(horizontal = chromePadding, vertical = 10.dp),
+            verticalArrangement = Arrangement.SpaceBetween,
+        ) {
+            TopHud(
+                frame = frame,
+                onBack = {
+                    if (frame.phase == RunPhase.Running) pauseTick++ else onExit()
+                },
+            )
+
+            val warning = frame.warnings.firstOrNull()
+            if (warning != null && result == null && frame.phase == RunPhase.Running) {
+                WarningBanner(warning)
+            } else {
+                Spacer(Modifier.height(if (isLandscape) 6.dp else 0.dp))
+            }
+
+            Spacer(Modifier.weight(1f))
+
+            BottomControlDock(
+                frame = frame,
+                settings = settings,
+                isLandscape = isLandscape,
+                onMove = { movement = it },
+                onDash = { dashTick++ },
+                onPulse = { pulseTick++ },
+                onShield = { shieldTick++ },
+                onMine = { mineTick++ },
+            )
+        }
+
+        if (frame.phase == RunPhase.ChoosingUpgrade && frame.overlay is OverlaySnapshot.LevelUp) {
+            LevelUpOverlay(
+                overlay = frame.overlay as OverlaySnapshot.LevelUp,
+                onPick = { selectedUpgrade = it },
+                onReroll = { rerollTick++ },
+            )
+        }
+
+        if (frame.phase == RunPhase.Paused && result == null) {
+            PauseOverlay(
+                onResume = { resumeTick++ },
+                onExit = onExit,
+            )
+        }
+
+        if (result != null) {
+            GameOverOverlay(
+                result = result!!,
+                onReplay = {
+                    runSeed = java.lang.System.currentTimeMillis()
+                    result = null
+                },
+                onExit = onExit,
+            )
+        }
+    }
+}
+
+@Composable
+private fun TopHud(
+    frame: FrameSnapshot,
+    onBack: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Top,
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                SmallActionPill(
+                    label = if (frame.phase == RunPhase.Running) "Pause" else "Hangar",
+                    onClick = onBack,
+                )
+                Surface(
+                    color = Color(0x99101822),
+                    shape = RoundedCornerShape(24.dp),
+                    tonalElevation = 0.dp,
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(
+                            text = frame.hud.shipLabel.ifBlank { "Striker" },
+                            color = Color.White,
+                            fontWeight = FontWeight.Black,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 20.sp,
+                        )
+                        Text(
+                            text = "Wave ${frame.hud.wave} · ${frame.hud.biomeLabel}",
+                            color = Color(0xFFAAC5D6),
+                            fontSize = 13.sp,
+                        )
+                    }
+                }
+            }
+
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    HudChip("Score ${frame.hud.score}")
+                    HudChip("+${frame.hud.archiveXpProjected} XP", accent = Color(0xFFFFB85A))
+                }
+                if (frame.hud.activeEventLabel != null) {
+                    HudChip(frame.hud.activeEventLabel!!, accent = Color(0xFFA7B6FF))
+                }
+                frame.runMissions.take(2).forEach { mission ->
+                    MissionStrip(mission)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WarningBanner(warning: WarningSnapshot) {
+    Box(
+        modifier = Modifier.fillMaxWidth(),
+        contentAlignment = Alignment.Center,
+    ) {
+        Surface(
+            color = Color(0xD8131C27),
+            shape = RoundedCornerShape(999.dp),
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    text = warning.title.uppercase(),
+                    color = Color(0xFFECF8FF),
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 1.5.sp,
+                    fontSize = 13.sp,
+                )
+                Text(
+                    text = warning.subtitle,
+                    color = Color(0xFFB7CADA),
+                    fontSize = 12.sp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BottomControlDock(
+    frame: FrameSnapshot,
+    settings: GameSettings,
+    isLandscape: Boolean,
+    onMove: (Vector2) -> Unit,
+    onDash: () -> Unit,
+    onPulse: () -> Unit,
+    onShield: () -> Unit,
+    onMine: () -> Unit,
+) {
+    val player = frame.player
+    val dockScale = settings.hudLayout.controlScale
+    val joystickFirst = !settings.hudLayout.flipped
+    val joystickModifier = Modifier.size(if (isLandscape) 180.dp else 164.dp * dockScale)
+    val actionYOffset = (settings.hudLayout.actionColumnYOffset * 18f).dp
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = Color(0xA20A1119),
+        shape = RoundedCornerShape(if (isLandscape) 30.dp else 28.dp),
+    ) {
+        if (isLandscape) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Bottom,
+            ) {
+                if (joystickFirst) {
+                    JoystickControl(joystickModifier, onMove)
+                }
+                StatusCluster(frame = frame, modifier = Modifier.weight(1f).padding(horizontal = 18.dp))
+                ActionCluster(
+                    player = player,
+                    modifier = Modifier.offset(y = actionYOffset),
+                    onDash = onDash,
+                    onPulse = onPulse,
+                    onShield = onShield,
+                    onMine = onMine,
+                )
+                if (!joystickFirst) {
+                    Spacer(Modifier.width(18.dp))
+                    JoystickControl(joystickModifier, onMove)
+                }
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                StatusCluster(frame = frame, modifier = Modifier.fillMaxWidth())
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    if (joystickFirst) {
+                        JoystickControl(joystickModifier, onMove)
+                    }
+                    ActionCluster(
+                        player = player,
+                        modifier = Modifier.offset(y = actionYOffset),
+                        onDash = onDash,
+                        onPulse = onPulse,
+                        onShield = onShield,
+                        onMine = onMine,
+                    )
+                    if (!joystickFirst) {
+                        JoystickControl(joystickModifier, onMove)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StatusCluster(
+    frame: FrameSnapshot,
+    modifier: Modifier = Modifier,
+) {
+    val player = frame.player
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = frame.hud.shipLabel.ifBlank { "Run" },
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                )
+                Text(
+                    text = "Kills ${frame.hud.kills} · Credits ${frame.hud.credits}",
+                    color = Color(0xFF9EB2C1),
+                    fontSize = 12.sp,
+                )
+            }
+            Text(
+                text = "Lv.${player?.level ?: 1}",
+                color = Color(0xFFFFD48A),
+                fontWeight = FontWeight.Black,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 18.sp,
+            )
+        }
+        player?.let {
+            StatBar("Hull", it.hp / it.maxHp, Color(0xFF5CE7FF), "${it.hp.toInt()}/${it.maxHp.toInt()}")
+            StatBar("Sync", it.xp / it.xpToNext, Color(0xFFFFB85A), "${it.xp.toInt()}/${it.xpToNext.toInt()}")
+        }
+    }
+}
+
+@Composable
+private fun StatBar(
+    label: String,
+    ratio: Float,
+    accent: Color,
+    value: String,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(label.uppercase(), color = Color(0xFF8EA3B4), fontSize = 11.sp, letterSpacing = 1.sp)
+            Text(value, color = Color.White, fontSize = 11.sp)
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(12.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .background(Color(0x40131D28)),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(ratio.coerceIn(0f, 1f))
+                    .fillMaxHeight()
+                    .background(
+                        Brush.horizontalGradient(
+                            listOf(accent, accent.copy(alpha = 0.55f)),
+                        ),
+                    ),
+            )
+        }
+    }
+}
+
+@Composable
+private fun JoystickControl(
+    modifier: Modifier,
+    onMove: (Vector2) -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .clip(CircleShape)
+            .background(Color(0x4D16222E))
+            .border(1.dp, Color(0x334CE5FF), CircleShape)
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDragStart = { start -> onMove(normalizeDrag(start, size)) },
+                    onDragEnd = { onMove(Vector2.Zero) },
+                    onDragCancel = { onMove(Vector2.Zero) },
+                    onDrag = { change, _ -> onMove(normalizeDrag(change.position, size)) },
+                )
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(72.dp)
+                .clip(CircleShape)
+                .background(
+                    Brush.radialGradient(
+                        listOf(Color(0xFF5CE7FF), Color(0xFF2D8FA7)),
+                    ),
+                ),
+        )
+    }
+}
+
+private fun normalizeDrag(position: Offset, size: IntSize): Vector2 {
+    val center = Offset(size.width / 2f, size.height / 2f)
+    val dx = position.x - center.x
+    val dy = position.y - center.y
+    val radius = min(size.width, size.height) * 0.42f
+    val distance = sqrt(dx * dx + dy * dy).coerceAtLeast(1f)
+    val clamped = min(distance, radius)
+    return Vector2(dx / distance * clamped / radius, dy / distance * clamped / radius)
+}
+
+@Composable
+private fun ActionCluster(
+    player: PlayerSnapshot?,
+    modifier: Modifier = Modifier,
+    onDash: () -> Unit,
+    onPulse: () -> Unit,
+    onShield: () -> Unit,
+    onMine: () -> Unit,
+) {
+    Column(
+        modifier = modifier.width(190.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            AbilityButton("Dash", Icons.Rounded.Bolt, cooldownLabel(player?.dashCooldown), Modifier.weight(1f), onDash)
+            AbilityButton("Pulse", Icons.Rounded.FlashOn, cooldownLabel(player?.pulseCooldown), Modifier.weight(1f), onPulse, accent = Color(0xFFA8B4FF))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            AbilityButton("Shield", Icons.Rounded.Security, cooldownLabel(player?.shieldCooldown), Modifier.weight(1f), onShield, accent = Color(0xFF8DFFBF))
+            AbilityButton("Mine", Icons.Rounded.TripOrigin, cooldownLabel(player?.mineCooldown), Modifier.weight(1f), onMine, accent = Color(0xFFFFC970))
+        }
+    }
+}
+
+@Composable
+private fun AbilityButton(
+    label: String,
+    icon: ImageVector,
+    status: String,
+    modifier: Modifier,
+    onClick: () -> Unit,
+    accent: Color = Color(0xFF5CE7FF),
+) {
+    FilledTonalButton(
+        onClick = onClick,
+        modifier = modifier.height(84.dp),
+        colors = ButtonDefaults.filledTonalButtonColors(
+            containerColor = Color(0xB0101722),
+            contentColor = Color.White,
+        ),
+        shape = RoundedCornerShape(24.dp),
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .clip(CircleShape)
+                    .background(accent.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(icon, contentDescription = null, tint = accent)
+            }
+            Text(label, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Text(status, fontSize = 11.sp, color = Color(0xFF95A8B8))
+        }
+    }
+}
+
+private fun cooldownLabel(value: Float?): String {
+    if (value == null) return "--"
+    return if (value <= 0.05f) "READY" else String.format("%.1fs", value)
+}
+
+@Composable
+private fun SmallActionPill(
+    label: String,
+    onClick: () -> Unit,
+) {
+    FilledTonalButton(
+        onClick = onClick,
+        colors = ButtonDefaults.filledTonalButtonColors(
+            containerColor = Color(0xE6F2E5FF),
+            contentColor = Color(0xFF10141B),
+        ),
+        shape = RoundedCornerShape(999.dp),
+    ) {
+        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = null)
+        Spacer(Modifier.width(6.dp))
+        Text(label, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun HudChip(
+    text: String,
+    accent: Color = Color(0xFF5CE7FF),
+) {
+    Surface(
+        color = Color(0x8A101922),
+        shape = RoundedCornerShape(999.dp),
+    ) {
+        Text(
+            text = text,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            color = accent,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+}
+
+@Composable
+private fun MissionStrip(mission: MissionSnapshot) {
+    Surface(
+        color = Color(0x8E0D151E),
+        shape = RoundedCornerShape(18.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.End,
+        ) {
+            Text(mission.label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                "${mission.progress}/${mission.target}",
+                color = if (mission.completed) Color(0xFF8DFFBF) else Color(0xFF9FB5C7),
+                fontSize = 11.sp,
+            )
+        }
+    }
+}
+
+@Composable
+private fun LevelUpOverlay(
+    overlay: OverlaySnapshot.LevelUp,
+    onPick: (Int) -> Unit,
+    onReroll: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xAA060A10)),
+        color = Color.Transparent,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(22.dp),
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Panel(
+                title = "Module Draft",
+                subtitle = "Level ${overlay.level} · scegli una carta per continuare",
+            ) {
+                overlay.choices.forEachIndexed { index, choice ->
+                    FilledTonalButton(
+                        onClick = { onPick(index) },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(22.dp),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = Color(0xFF111A26),
+                            contentColor = Color.White,
+                        ),
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text(choice.label, fontWeight = FontWeight.Black)
+                            Text(choice.description, fontSize = 12.sp, color = Color(0xFFB4C9D8))
+                            Text(
+                                "${choice.category} · ${choice.currentStacks}/${choice.maxStacks}",
+                                fontSize = 11.sp,
+                                color = Color(0xFF6FE3FF),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                }
+                OutlinedButton(
+                    onClick = onReroll,
+                    enabled = overlay.rerollsRemaining > 0,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Reroll (${overlay.rerollsRemaining})")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PauseOverlay(
+    onResume: () -> Unit,
+    onExit: () -> Unit,
+) {
+    Surface(modifier = Modifier.fillMaxSize(), color = Color(0x99070B11)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Panel(title = "Run in pausa", subtitle = "Riprendi o rientra in hangar.") {
+                FilledTonalButton(onClick = onResume, modifier = Modifier.fillMaxWidth()) {
+                    Text("Riprendi")
+                }
+                Spacer(Modifier.height(10.dp))
+                OutlinedButton(onClick = onExit, modifier = Modifier.fillMaxWidth()) {
+                    Text("Esci")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GameOverOverlay(
+    result: RunResult,
+    onReplay: () -> Unit,
+    onExit: () -> Unit,
+) {
+    Surface(modifier = Modifier.fillMaxSize(), color = Color(0xB205080E)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Panel(
+                title = "Run Archiviata",
+                subtitle = "Wave ${result.waveReached} · ${result.kills} kill · ${result.bossesDefeated} boss",
+            ) {
+                Text(
+                    text = "Score ${result.score}",
+                    color = Color.White,
+                    fontWeight = FontWeight.Black,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 24.sp,
+                )
+                Text(
+                    text = "+${result.creditsEarned} crediti  ·  +${result.archiveXpEarned} XP",
+                    color = Color(0xFFFFD48A),
+                    fontWeight = FontWeight.Bold,
+                )
+                Spacer(Modifier.height(10.dp))
+                FilledTonalButton(onClick = onReplay, modifier = Modifier.fillMaxWidth()) {
+                    Text("Nuova run")
+                }
+                Spacer(Modifier.height(10.dp))
+                OutlinedButton(onClick = onExit, modifier = Modifier.fillMaxWidth()) {
+                    Text("Hangar")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun Panel(
+    title: String,
+    subtitle: String,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(30.dp))
+            .background(
+                Brush.verticalGradient(
+                    listOf(Color(0xF0101721), Color(0xEC090E15)),
+                ),
+            )
+            .border(1.dp, Color(0x224CE5FF), RoundedCornerShape(30.dp))
+            .padding(22.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        content = {
+            Text(
+                title,
+                color = Color.White,
+                fontWeight = FontWeight.Black,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 26.sp,
+            )
+            Text(subtitle, color = Color(0xFFAFBFCD))
+            content()
+        },
+    )
+}
