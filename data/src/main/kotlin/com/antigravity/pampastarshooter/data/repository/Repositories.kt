@@ -18,7 +18,10 @@ import com.antigravity.pampastarshooter.core.model.PlayerProfile
 import com.antigravity.pampastarshooter.core.model.RunHistoryEntry
 import com.antigravity.pampastarshooter.core.model.RunResult
 import com.antigravity.pampastarshooter.core.model.applyRunResult
+import com.antigravity.pampastarshooter.core.model.isPermanentModuleAvailable
+import com.antigravity.pampastarshooter.core.model.normalizeForContent
 import com.antigravity.pampastarshooter.data.local.AppDatabase
+import com.antigravity.pampastarshooter.data.local.MIGRATION_1_2
 import com.antigravity.pampastarshooter.data.local.entity.toDomain
 import com.antigravity.pampastarshooter.data.local.entity.toEntity
 import kotlinx.coroutines.flow.Flow
@@ -31,6 +34,7 @@ interface ProfileRepository {
     suspend fun setSelectedShip(shipId: String)
     suspend fun markTutorialSeen()
     suspend fun upgradeModule(moduleId: String): Boolean
+    suspend fun setEquippedPerks(ids: List<String>)
     suspend fun applyRunResult(result: RunResult)
 }
 
@@ -62,29 +66,36 @@ class RoomProfileRepository(
     private val contentRepository: ContentRepository,
 ) : ProfileRepository {
     override val profile: Flow<PlayerProfile> = db.profileDao().observe().map { entity ->
-        entity?.toDomain() ?: DefaultGameContent.starterProfile()
+        (entity?.toDomain() ?: DefaultGameContent.starterProfile()).normalizeForContent(contentRepository.load())
     }
 
     override suspend fun refresh() {
-        if (db.profileDao().get() == null) {
+        val existing = db.profileDao().get()
+        if (existing == null) {
             db.profileDao().upsert(DefaultGameContent.starterProfile().toEntity())
+            return
+        }
+        val normalized = existing.toDomain().normalizeForContent(contentRepository.load())
+        if (normalized != existing.toDomain()) {
+            db.profileDao().upsert(normalized.toEntity())
         }
     }
 
     override suspend fun setSelectedShip(shipId: String) {
-        val current = profile.first()
+        val current = profile.first().normalizeForContent(contentRepository.load())
         db.profileDao().upsert(current.copy(selectedShipId = shipId).toEntity())
     }
 
     override suspend fun markTutorialSeen() {
-        val current = profile.first()
+        val current = profile.first().normalizeForContent(contentRepository.load())
         db.profileDao().upsert(current.copy(tutorialSeen = true).toEntity())
     }
 
     override suspend fun upgradeModule(moduleId: String): Boolean {
-        val current = profile.first()
+        val current = profile.first().normalizeForContent(contentRepository.load())
         val module = contentRepository.load().permanentModules.firstOrNull { it.id == moduleId } ?: return false
-        val level = current.unlockTree.permanentModules[moduleId] ?: 0
+        if (!current.isPermanentModuleAvailable(module)) return false
+        val level = current.unlockTree.permanentModules[moduleId] ?: return false
         val cost = module.upgradeCost(level)
         if (current.credits < cost || level >= module.maxLevel) return false
         val updatedModules = current.unlockTree.permanentModules + (moduleId to (level + 1))
@@ -97,8 +108,17 @@ class RoomProfileRepository(
         return true
     }
 
+    override suspend fun setEquippedPerks(ids: List<String>) {
+        val current = profile.first().normalizeForContent(contentRepository.load())
+        val allowed = ids
+            .filter { it in current.unlockedPerkIds }
+            .distinct()
+            .take(2)
+        db.profileDao().upsert(current.copy(equippedPerkIds = allowed).toEntity())
+    }
+
     override suspend fun applyRunResult(result: RunResult) {
-        val current = profile.first()
+        val current = profile.first().normalizeForContent(contentRepository.load())
         val updated = current.applyRunResult(result, contentRepository.load())
         db.profileDao().upsert(updated.toEntity())
     }
@@ -180,5 +200,5 @@ object RepositoryFactory {
         context,
         AppDatabase::class.java,
         "pampa_star_shooter.db",
-    ).build()
+    ).addMigrations(MIGRATION_1_2).build()
 }

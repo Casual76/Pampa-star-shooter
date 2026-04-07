@@ -10,7 +10,6 @@ import android.graphics.LinearGradient
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
-import android.graphics.PointF
 import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
@@ -18,7 +17,6 @@ import com.antigravity.pampastarshooter.core.model.FrameSnapshot
 import com.antigravity.pampastarshooter.core.model.GameSettings
 import com.antigravity.pampastarshooter.core.model.GraphicsProfile
 import com.antigravity.pampastarshooter.core.model.PlayerSnapshot
-import com.antigravity.pampastarshooter.core.model.Vector2
 import com.antigravity.pampastarshooter.core.model.VisualEffectKind
 import kotlin.math.cos
 import kotlin.math.max
@@ -40,6 +38,24 @@ private data class RenderQuality(
     val borderAlpha: Int,
     val particleScale: Float,
     val scanlineAlpha: Int,
+    val particleStride: Int,
+    val effectStride: Int,
+)
+
+private data class CachedAmbientGlow(
+    val x: Float,
+    val y: Float,
+    val radius: Float,
+    val shader: Shader,
+)
+
+private data class BackdropCache(
+    val width: Int,
+    val height: Int,
+    val palette: RenderPalette,
+    val backgroundShader: Shader,
+    val vignetteShader: Shader,
+    val ambientGlows: List<CachedAmbientGlow>,
 )
 
 class AndroidGameRenderer(context: Context) {
@@ -63,6 +79,8 @@ class AndroidGameRenderer(context: Context) {
     private val path = Path()
     private val rect = RectF()
     private val matrix = Matrix()
+    private val tintFilters = mutableMapOf<Int, BlendModeColorFilter>()
+    private var backdropCache: BackdropCache? = null
 
     fun render(
         canvas: Canvas,
@@ -72,7 +90,7 @@ class AndroidGameRenderer(context: Context) {
         surfaceHeight: Int,
     ) {
         val palette = paletteFor(snapshot.hud.biomeLabel)
-        val quality = qualityFor(settings, surfaceWidth, surfaceHeight)
+        val quality = qualityFor(settings, surfaceWidth, surfaceHeight, snapshot)
         val fitScale = min(
             surfaceWidth / snapshot.bounds.width,
             surfaceHeight / snapshot.bounds.height,
@@ -94,17 +112,18 @@ class AndroidGameRenderer(context: Context) {
             }
         }
 
-        drawBackdrop(canvas, surfaceWidth, surfaceHeight, snapshot, palette, quality)
+        val backdrop = backdropFor(surfaceWidth, surfaceHeight, palette)
+        drawBackdrop(canvas, surfaceWidth, surfaceHeight, snapshot, backdrop, quality)
         drawArenaPlane(canvas, snapshot, scale, offsetX, offsetY, palette, quality)
-        drawVisualEffects(canvas, snapshot, scale, offsetX, offsetY, behindEntities = true)
+        drawVisualEffects(canvas, snapshot, scale, offsetX, offsetY, quality, behindEntities = true)
         drawPickups(canvas, snapshot, scale, offsetX, offsetY)
         drawProjectiles(canvas, snapshot, scale, offsetX, offsetY)
         drawEnemies(canvas, snapshot, scale, offsetX, offsetY)
         snapshot.player?.let { drawPlayer(canvas, it, snapshot, scale, offsetX, offsetY, palette) }
         drawParticles(canvas, snapshot, scale, offsetX, offsetY, quality)
-        drawVisualEffects(canvas, snapshot, scale, offsetX, offsetY, behindEntities = false)
+        drawVisualEffects(canvas, snapshot, scale, offsetX, offsetY, quality, behindEntities = false)
         drawDamageFlash(canvas, snapshot, surfaceWidth, surfaceHeight, palette)
-        drawVignette(canvas, surfaceWidth, surfaceHeight)
+        drawVignette(canvas, surfaceWidth, surfaceHeight, backdrop)
         canvas.restore()
     }
 
@@ -113,22 +132,14 @@ class AndroidGameRenderer(context: Context) {
         width: Int,
         height: Int,
         snapshot: FrameSnapshot,
-        palette: RenderPalette,
+        backdrop: BackdropCache,
         quality: RenderQuality,
     ) {
-        backgroundPaint.shader = LinearGradient(
-            0f,
-            0f,
-            0f,
-            height.toFloat(),
-            palette.top,
-            palette.bottom,
-            Shader.TileMode.CLAMP,
-        )
+        backgroundPaint.shader = backdrop.backgroundShader
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), backgroundPaint)
-        drawAmbientGlow(canvas, width * 0.16f, height * 0.15f, width * 0.52f, palette.glow, quality.ambientGlowAlpha)
-        drawAmbientGlow(canvas, width * 0.82f, height * 0.76f, width * 0.44f, palette.accent, quality.ambientGlowAlpha * 0.8f)
-        drawAmbientGlow(canvas, width * 0.52f, height * 0.36f, width * 0.32f, Color.WHITE, quality.ambientGlowAlpha * 0.25f)
+        drawAmbientGlow(canvas, backdrop.ambientGlows[0], quality.ambientGlowAlpha)
+        drawAmbientGlow(canvas, backdrop.ambientGlows[1], quality.ambientGlowAlpha * 0.8f)
+        drawAmbientGlow(canvas, backdrop.ambientGlows[2], quality.ambientGlowAlpha * 0.25f)
 
         repeat(quality.starCount) { index ->
             val baseX = ((index * 71) % width).toFloat()
@@ -197,16 +208,17 @@ class AndroidGameRenderer(context: Context) {
         offsetY: Float,
     ) {
         snapshot.pickups.forEach { pickup ->
-            val p = project(pickup.position, scale, offsetX, offsetY)
+            val px = offsetX + pickup.position.x * scale
+            val py = offsetY + pickup.position.y * scale
             val radius = pickup.radius * scale * 2.2f
             val glow = if (pickup.kind == "xp") assets.pickupXp else assets.pickupCredit
-            drawBitmapCentered(canvas, glow, p.x, p.y, radius * 2.4f, alpha = 0.9f)
+            drawBitmapCentered(canvas, glow, px, py, radius * 2.4f, alpha = 0.9f)
             fillPaint.color = pickup.color.toAndroidColor()
             path.reset()
-            path.moveTo(p.x, p.y - pickup.radius * scale * 1.6f)
-            path.lineTo(p.x + pickup.radius * scale * 1.16f, p.y)
-            path.lineTo(p.x, p.y + pickup.radius * scale * 1.6f)
-            path.lineTo(p.x - pickup.radius * scale * 1.16f, p.y)
+            path.moveTo(px, py - pickup.radius * scale * 1.6f)
+            path.lineTo(px + pickup.radius * scale * 1.16f, py)
+            path.lineTo(px, py + pickup.radius * scale * 1.6f)
+            path.lineTo(px - pickup.radius * scale * 1.16f, py)
             path.close()
             canvas.drawPath(path, fillPaint)
         }
@@ -220,14 +232,15 @@ class AndroidGameRenderer(context: Context) {
         offsetY: Float,
     ) {
         snapshot.projectiles.forEach { projectile ->
-            val p = project(projectile.position, scale, offsetX, offsetY)
+            val px = offsetX + projectile.position.x * scale
+            val py = offsetY + projectile.position.y * scale
             val radius = projectile.radius * scale
             val color = projectile.color.toAndroidColor()
             glowPaint.color = color
             glowPaint.alpha = if (projectile.friendly) 210 else 185
-            canvas.drawCircle(p.x, p.y, radius * 2.05f, glowPaint)
+            canvas.drawCircle(px, py, radius * 2.05f, glowPaint)
             fillPaint.color = color
-            canvas.drawCircle(p.x, p.y, radius, fillPaint)
+            canvas.drawCircle(px, py, radius, fillPaint)
         }
     }
 
@@ -239,30 +252,31 @@ class AndroidGameRenderer(context: Context) {
         offsetY: Float,
     ) {
         snapshot.enemies.forEach { enemy ->
-            val p = project(enemy.position, scale, offsetX, offsetY)
+            val px = offsetX + enemy.position.x * scale
+            val py = offsetY + enemy.position.y * scale
             val radius = enemy.radius * scale
             val color = enemy.color.toAndroidColor()
 
             glowPaint.color = color
             glowPaint.alpha = if (enemy.isElite) 150 else 88
-            canvas.drawCircle(p.x, p.y, radius * 1.7f, glowPaint)
-            drawBitmapCentered(canvas, assets.enemySprite(enemy.kindId), p.x, p.y, radius * 2.15f)
+            canvas.drawCircle(px, py, radius * 1.7f, glowPaint)
+            drawBitmapCentered(canvas, assets.enemySprite(enemy.kindId), px, py, radius * 2.15f)
 
             if (enemy.isElite) {
-                drawBitmapCentered(canvas, assets.eliteSigil, p.x, p.y, radius * 2.8f, alpha = 0.86f)
+                drawBitmapCentered(canvas, assets.eliteSigil, px, py, radius * 2.8f, alpha = 0.86f)
             }
             if (enemy.kindId == "relay" || enemy.kindId == "lich" || enemy.kindId == "hydra") {
-                drawBitmapCentered(canvas, assets.bossSigil, p.x, p.y, radius * 3.2f, alpha = 0.92f)
+                drawBitmapCentered(canvas, assets.bossSigil, px, py, radius * 3.2f, alpha = 0.92f)
             }
 
             if (enemy.telegraphAlpha > 0f) {
                 strokePaint.color = Color.argb((enemy.telegraphAlpha * 185).toInt(), 255, 236, 160)
                 strokePaint.strokeWidth = 5f
-                canvas.drawCircle(p.x, p.y, radius + 22f, strokePaint)
+                canvas.drawCircle(px, py, radius + 22f, strokePaint)
                 strokePaint.strokeWidth = 2.5f
             }
 
-            rect.set(p.x - radius, p.y + radius + 11f, p.x + radius, p.y + radius + 18f)
+            rect.set(px - radius, py + radius + 11f, px + radius, py + radius + 18f)
             fillPaint.color = Color.argb(128, 7, 12, 18)
             canvas.drawRoundRect(rect, 9f, 9f, fillPaint)
             rect.right = rect.left + rect.width() * enemy.hpRatio.coerceIn(0f, 1f)
@@ -280,15 +294,16 @@ class AndroidGameRenderer(context: Context) {
         offsetY: Float,
         palette: RenderPalette,
     ) {
-        val p = project(player.position, scale, offsetX, offsetY)
+        val px = offsetX + player.position.x * scale
+        val py = offsetY + player.position.y * scale
         val radius = player.radius * scale
         val thrusterAlpha = (0.4f + snapshot.visualFx.overdriveAlpha * 0.6f).coerceIn(0f, 1f)
         if (snapshot.visualFx.dashAlpha > 0f || thrusterAlpha > 0f) {
             drawBitmapCentered(
                 canvas = canvas,
                 bitmap = assets.thrusterTrail,
-                centerX = p.x,
-                centerY = p.y + radius * 0.5f,
+                centerX = px,
+                centerY = py + radius * 0.5f,
                 size = radius * 2.8f,
                 alpha = max(snapshot.visualFx.dashAlpha, thrusterAlpha),
             )
@@ -296,15 +311,15 @@ class AndroidGameRenderer(context: Context) {
 
         glowPaint.color = player.activeShipColor.toAndroidColor()
         glowPaint.alpha = (150 + snapshot.visualFx.overdriveAlpha * 65f).toInt().coerceIn(0, 255)
-        canvas.drawCircle(p.x, p.y, radius * 2.15f, glowPaint)
-        drawBitmapCentered(canvas, assets.shipSprite(player.shipId), p.x, p.y, radius * 2.3f)
+        canvas.drawCircle(px, py, radius * 2.15f, glowPaint)
+        drawBitmapCentered(canvas, assets.shipSprite(player.shipId), px, py, radius * 2.3f)
 
         if (snapshot.visualFx.shieldAlpha > 0f || player.shield > 0f) {
             drawBitmapCentered(
                 canvas = canvas,
                 bitmap = assets.effectSprite(VisualEffectKind.Shield),
-                centerX = p.x,
-                centerY = p.y,
+                centerX = px,
+                centerY = py,
                 size = radius * 4.6f,
                 alpha = max(snapshot.visualFx.shieldAlpha, 0.32f),
             )
@@ -312,7 +327,7 @@ class AndroidGameRenderer(context: Context) {
 
         strokePaint.color = palette.accent
         strokePaint.alpha = (110 + snapshot.visualFx.overdriveAlpha * 70f).toInt().coerceIn(0, 255)
-        canvas.drawCircle(p.x, p.y, radius * 2.5f, strokePaint)
+        canvas.drawCircle(px, py, radius * 2.5f, strokePaint)
         strokePaint.alpha = 255
     }
 
@@ -324,11 +339,14 @@ class AndroidGameRenderer(context: Context) {
         offsetY: Float,
         quality: RenderQuality,
     ) {
+        var index = 0
         snapshot.particles.forEach { particle ->
-            val p = project(particle.position, scale, offsetX, offsetY)
+            if (index++ % quality.particleStride != 0) return@forEach
+            val px = offsetX + particle.position.x * scale
+            val py = offsetY + particle.position.y * scale
             fillPaint.color = particle.color.toAndroidColor()
             fillPaint.alpha = (particle.alpha * 255).toInt().coerceIn(0, 255)
-            canvas.drawCircle(p.x, p.y, particle.radius * scale * quality.particleScale, fillPaint)
+            canvas.drawCircle(px, py, particle.radius * scale * quality.particleScale, fillPaint)
             fillPaint.alpha = 255
         }
     }
@@ -339,22 +357,26 @@ class AndroidGameRenderer(context: Context) {
         scale: Float,
         offsetX: Float,
         offsetY: Float,
+        quality: RenderQuality,
         behindEntities: Boolean,
     ) {
+        var index = 0
         snapshot.visualFx.effects.forEach { effect ->
             val isBehind = effect.kind == VisualEffectKind.Pulse ||
                 effect.kind == VisualEffectKind.Shield ||
                 effect.kind == VisualEffectKind.Mine ||
                 effect.kind == VisualEffectKind.Death
             if (isBehind != behindEntities) return@forEach
-            val p = project(effect.position, scale, offsetX, offsetY)
+            if (index++ % quality.effectStride != 0) return@forEach
+            val px = offsetX + effect.position.x * scale
+            val py = offsetY + effect.position.y * scale
             val baseSize = effect.radius * scale * 2f
             val sprite = assets.effectSprite(effect.kind)
             drawBitmapCentered(
                 canvas = canvas,
                 bitmap = sprite,
-                centerX = p.x,
-                centerY = p.y,
+                centerX = px,
+                centerY = py,
                 size = baseSize,
                 alpha = effect.alpha.coerceIn(0f, 1f),
                 rotationDegrees = effect.rotationDegrees,
@@ -377,29 +399,17 @@ class AndroidGameRenderer(context: Context) {
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), fillPaint)
     }
 
-    private fun drawVignette(canvas: Canvas, width: Int, height: Int) {
-        vignettePaint.shader = RadialGradient(
-            width * 0.5f,
-            height * 0.48f,
-            max(width, height).toFloat() * 0.82f,
-            intArrayOf(Color.TRANSPARENT, Color.argb(92, 4, 6, 10), Color.argb(186, 3, 4, 8)),
-            floatArrayOf(0.45f, 0.82f, 1f),
-            Shader.TileMode.CLAMP,
-        )
+    private fun drawVignette(canvas: Canvas, width: Int, height: Int, backdrop: BackdropCache) {
+        vignettePaint.shader = backdrop.vignetteShader
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), vignettePaint)
         vignettePaint.shader = null
     }
 
-    private fun drawAmbientGlow(canvas: Canvas, x: Float, y: Float, radius: Float, color: Int, alphaFactor: Float) {
-        glowPaint.shader = RadialGradient(
-            x,
-            y,
-            radius,
-            intArrayOf(color.withAlpha((255 * alphaFactor).toInt()), Color.TRANSPARENT),
-            floatArrayOf(0f, 1f),
-            Shader.TileMode.CLAMP,
-        )
-        canvas.drawCircle(x, y, radius, glowPaint)
+    private fun drawAmbientGlow(canvas: Canvas, glow: CachedAmbientGlow, alphaFactor: Float) {
+        glowPaint.shader = glow.shader
+        glowPaint.alpha = (255 * alphaFactor).toInt().coerceIn(0, 255)
+        canvas.drawCircle(glow.x, glow.y, glow.radius, glowPaint)
+        glowPaint.alpha = 255
         glowPaint.shader = null
     }
 
@@ -416,7 +426,7 @@ class AndroidGameRenderer(context: Context) {
     ) {
         val drawPaint = if (additive) additivePaint else bitmapPaint
         drawPaint.alpha = (alpha * 255).toInt().coerceIn(0, 255)
-        drawPaint.colorFilter = tint?.let { BlendModeColorFilter(it, BlendMode.SRC_ATOP) }
+        drawPaint.colorFilter = tint?.let { tintFilters.getOrPut(it) { BlendModeColorFilter(it, BlendMode.SRC_ATOP) } }
         matrix.reset()
         val scale = size / max(bitmap.width, bitmap.height).toFloat()
         matrix.postTranslate(-bitmap.width / 2f, -bitmap.height / 2f)
@@ -428,70 +438,140 @@ class AndroidGameRenderer(context: Context) {
         drawPaint.colorFilter = null
     }
 
-    private fun project(world: Vector2, scale: Float, offsetX: Float, offsetY: Float): PointF =
-        PointF(offsetX + world.x * scale, offsetY + world.y * scale)
-
     private fun paletteFor(label: String): RenderPalette = when {
-        label.contains("Obsidian", ignoreCase = true) -> RenderPalette(
-            top = Color.parseColor("#060816"),
-            bottom = Color.parseColor("#131935"),
-            grid = Color.argb(46, 140, 156, 255),
-            glow = Color.parseColor("#3849B4"),
-            accent = Color.parseColor("#B7BEFF"),
-            warning = Color.parseColor("#B64B78"),
-        )
-        label.contains("Amber", ignoreCase = true) -> RenderPalette(
-            top = Color.parseColor("#110907"),
-            bottom = Color.parseColor("#24160F"),
-            grid = Color.argb(46, 255, 189, 94),
-            glow = Color.parseColor("#72310E"),
-            accent = Color.parseColor("#FFB85A"),
-            warning = Color.parseColor("#C65543"),
-        )
-        else -> RenderPalette(
-            top = Color.parseColor("#050911"),
-            bottom = Color.parseColor("#0A1623"),
-            grid = Color.argb(44, 86, 198, 255),
-            glow = Color.parseColor("#143E59"),
-            accent = Color.parseColor("#4CE5FF"),
-            warning = Color.parseColor("#B3486F"),
-        )
+        label.contains("Obsidian", ignoreCase = true) -> ObsidianPalette
+        label.contains("Amber", ignoreCase = true) -> AmberPalette
+        else -> DefaultPalette
     }
 
-    private fun qualityFor(settings: GameSettings, width: Int, height: Int): RenderQuality {
-        if (settings.lowVfx) {
-            return RenderQuality(
-                starCount = 24,
-                ambientGlowAlpha = 0.12f,
-                borderAlpha = 48,
-                particleScale = 0.72f,
-                scanlineAlpha = 0,
-            )
+    private fun backdropFor(width: Int, height: Int, palette: RenderPalette): BackdropCache {
+        val cached = backdropCache
+        if (cached != null && cached.width == width && cached.height == height && cached.palette == palette) {
+            return cached
         }
-        return when (settings.graphicsProfile) {
-            GraphicsProfile.Clean -> RenderQuality(
-                starCount = 30,
-                ambientGlowAlpha = 0.16f,
-                borderAlpha = 64,
-                particleScale = 0.8f,
-                scanlineAlpha = 10,
+        val ambientGlows = listOf(
+            CachedAmbientGlow(
+                x = width * 0.16f,
+                y = height * 0.15f,
+                radius = width * 0.52f,
+                shader = RadialGradient(
+                    width * 0.16f,
+                    height * 0.15f,
+                    width * 0.52f,
+                    intArrayOf(palette.glow, Color.TRANSPARENT),
+                    floatArrayOf(0f, 1f),
+                    Shader.TileMode.CLAMP,
+                ),
+            ),
+            CachedAmbientGlow(
+                x = width * 0.82f,
+                y = height * 0.76f,
+                radius = width * 0.44f,
+                shader = RadialGradient(
+                    width * 0.82f,
+                    height * 0.76f,
+                    width * 0.44f,
+                    intArrayOf(palette.accent, Color.TRANSPARENT),
+                    floatArrayOf(0f, 1f),
+                    Shader.TileMode.CLAMP,
+                ),
+            ),
+            CachedAmbientGlow(
+                x = width * 0.52f,
+                y = height * 0.36f,
+                radius = width * 0.32f,
+                shader = RadialGradient(
+                    width * 0.52f,
+                    height * 0.36f,
+                    width * 0.32f,
+                    intArrayOf(Color.WHITE, Color.TRANSPARENT),
+                    floatArrayOf(0f, 1f),
+                    Shader.TileMode.CLAMP,
+                ),
+            ),
+        )
+        return BackdropCache(
+            width = width,
+            height = height,
+            palette = palette,
+            backgroundShader = LinearGradient(
+                0f,
+                0f,
+                0f,
+                height.toFloat(),
+                palette.top,
+                palette.bottom,
+                Shader.TileMode.CLAMP,
+            ),
+            vignetteShader = RadialGradient(
+                width * 0.5f,
+                height * 0.48f,
+                max(width, height).toFloat() * 0.82f,
+                intArrayOf(Color.TRANSPARENT, Color.argb(92, 4, 6, 10), Color.argb(186, 3, 4, 8)),
+                floatArrayOf(0.45f, 0.82f, 1f),
+                Shader.TileMode.CLAMP,
+            ),
+            ambientGlows = ambientGlows,
+        ).also { backdropCache = it }
+    }
+
+    private fun qualityFor(settings: GameSettings, width: Int, height: Int, snapshot: FrameSnapshot): RenderQuality {
+        val base = when {
+            settings.lowVfx -> RenderQuality(
+                starCount = 18,
+                ambientGlowAlpha = 0.1f,
+                borderAlpha = 40,
+                particleScale = 0.64f,
+                scanlineAlpha = 0,
+                particleStride = 2,
+                effectStride = 2,
             )
-            GraphicsProfile.Dense -> RenderQuality(
-                starCount = 52,
-                ambientGlowAlpha = 0.24f,
-                borderAlpha = 86,
-                particleScale = 0.92f,
-                scanlineAlpha = 18,
+            settings.graphicsProfile == GraphicsProfile.Clean -> RenderQuality(
+                starCount = 24,
+                ambientGlowAlpha = 0.14f,
+                borderAlpha = 56,
+                particleScale = 0.74f,
+                scanlineAlpha = 6,
+                particleStride = 1,
+                effectStride = 1,
             )
-            GraphicsProfile.Auto -> {
+            settings.graphicsProfile == GraphicsProfile.Dense -> RenderQuality(
+                starCount = 44,
+                ambientGlowAlpha = 0.22f,
+                borderAlpha = 84,
+                particleScale = 0.9f,
+                scanlineAlpha = 14,
+                particleStride = 1,
+                effectStride = 1,
+            )
+            else -> {
                 val dense = width * height <= 2_000_000
                 if (dense) {
-                    RenderQuality(44, 0.22f, 80, 0.88f, 14)
+                    RenderQuality(34, 0.18f, 72, 0.82f, 10, 1, 1)
                 } else {
-                    RenderQuality(34, 0.18f, 70, 0.84f, 12)
+                    RenderQuality(28, 0.16f, 64, 0.78f, 8, 1, 1)
                 }
             }
         }
+        val sceneLoad = snapshot.enemies.size + snapshot.projectiles.size + snapshot.particles.size + snapshot.visualFx.effects.size * 2
+        if (sceneLoad < 90) return base
+        val severeLoad = sceneLoad >= 180
+        return base.copy(
+            starCount = (base.starCount * if (severeLoad) 0.55f else 0.72f).toInt().coerceAtLeast(12),
+            ambientGlowAlpha = base.ambientGlowAlpha * if (severeLoad) 0.55f else 0.78f,
+            borderAlpha = (base.borderAlpha * if (severeLoad) 0.8f else 0.9f).toInt().coerceAtLeast(32),
+            particleScale = base.particleScale * if (severeLoad) 0.72f else 0.86f,
+            scanlineAlpha = if (severeLoad) 0 else (base.scanlineAlpha * 0.5f).toInt(),
+            particleStride = when {
+                settings.lowVfx || snapshot.particles.size >= 100 -> 3
+                snapshot.particles.size >= 56 -> 2
+                else -> base.particleStride
+            },
+            effectStride = when {
+                settings.lowVfx || snapshot.visualFx.effects.size >= 36 -> 2
+                else -> base.effectStride
+            },
+        )
     }
 
     private fun Long.toAndroidColor(): Int = Color.argb(
@@ -507,4 +587,31 @@ class AndroidGameRenderer(context: Context) {
         Color.green(this),
         Color.blue(this),
     )
+
+    private companion object {
+        val DefaultPalette = RenderPalette(
+            top = Color.parseColor("#050911"),
+            bottom = Color.parseColor("#0A1623"),
+            grid = Color.argb(44, 86, 198, 255),
+            glow = Color.parseColor("#143E59"),
+            accent = Color.parseColor("#4CE5FF"),
+            warning = Color.parseColor("#B3486F"),
+        )
+        val ObsidianPalette = RenderPalette(
+            top = Color.parseColor("#060816"),
+            bottom = Color.parseColor("#131935"),
+            grid = Color.argb(46, 140, 156, 255),
+            glow = Color.parseColor("#3849B4"),
+            accent = Color.parseColor("#B7BEFF"),
+            warning = Color.parseColor("#B64B78"),
+        )
+        val AmberPalette = RenderPalette(
+            top = Color.parseColor("#110907"),
+            bottom = Color.parseColor("#24160F"),
+            grid = Color.argb(46, 255, 189, 94),
+            glow = Color.parseColor("#72310E"),
+            accent = Color.parseColor("#FFB85A"),
+            warning = Color.parseColor("#C65543"),
+        )
+    }
 }

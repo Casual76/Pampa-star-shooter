@@ -4,10 +4,10 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -69,6 +69,9 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.antigravity.pampastarshooter.AppContainer
+import com.antigravity.pampastarshooter.core.content.CampaignNodeDef
+import com.antigravity.pampastarshooter.core.content.CampaignNodeKind
+import com.antigravity.pampastarshooter.core.content.CampaignSectorDef
 import com.antigravity.pampastarshooter.core.content.DefaultGameContent
 import com.antigravity.pampastarshooter.core.content.GameContentBundle
 import com.antigravity.pampastarshooter.core.content.LabCategory
@@ -77,7 +80,15 @@ import com.antigravity.pampastarshooter.core.model.GameSettings
 import com.antigravity.pampastarshooter.core.model.GraphicsProfile
 import com.antigravity.pampastarshooter.core.model.PlayerProfile
 import com.antigravity.pampastarshooter.core.model.RunHistoryEntry
+import com.antigravity.pampastarshooter.core.model.RunMode
+import com.antigravity.pampastarshooter.core.model.RunObjective
 import com.antigravity.pampastarshooter.core.model.RunModifier
+import com.antigravity.pampastarshooter.core.model.currentCampaignNode
+import com.antigravity.pampastarshooter.core.model.currentCampaignSector
+import com.antigravity.pampastarshooter.core.model.displayLabel
+import com.antigravity.pampastarshooter.core.model.isPermanentModuleAvailable
+import com.antigravity.pampastarshooter.core.model.nextRewardCampaignNode
+import com.antigravity.pampastarshooter.core.model.unlockedRunModifierIds
 import com.antigravity.pampastarshooter.data.repository.SettingsRepository
 import com.antigravity.pampastarshooter.game.android.R as GameAndroidR
 import kotlinx.coroutines.launch
@@ -103,7 +114,11 @@ private val PampaMint = Color(0xFF88FFC8)
 private val PampaText = Color(0xFFF3FAFF)
 private val PampaMuted = Color(0xFFA7BBCC)
 
-private data class PendingRunSetup(
+data class PendingRunSetup(
+    val mode: RunMode = RunMode.Campaign,
+    val campaignNodeId: String? = null,
+    val forcedBiomeId: String? = null,
+    val objective: RunObjective? = null,
     val modifiers: List<String> = emptyList(),
 )
 
@@ -140,6 +155,11 @@ fun PampaStarShooterApp(
                             container.profileRepository.upgradeModule(moduleId)
                         }
                     },
+                    onSetEquippedPerks = { perks ->
+                        coroutineScope.launch {
+                            container.profileRepository.setEquippedPerks(perks)
+                        }
+                    },
                 )
             }
             composable(Route.Codex) {
@@ -161,8 +181,8 @@ fun PampaStarShooterApp(
                     selectedModifierIds = pendingRunSetup.modifiers,
                     onBack = { navController.popBackStack() },
                     onModifierChange = { pendingRunSetup = pendingRunSetup.copy(modifiers = it) },
-                    onLaunch = { modifiers ->
-                        pendingRunSetup = pendingRunSetup.copy(modifiers = modifiers)
+                    onLaunch = { setup ->
+                        pendingRunSetup = setup
                         navController.navigate(Route.Game)
                     },
                 )
@@ -172,7 +192,7 @@ fun PampaStarShooterApp(
                     container = container,
                     profile = profile,
                     settings = settings,
-                    selectedModifiers = pendingRunSetup.modifiers,
+                    runSetup = pendingRunSetup,
                     onExit = { navController.popBackStack() },
                 )
             }
@@ -321,6 +341,15 @@ private fun categoryDescription(category: LabCategory): String = when (category)
     LabCategory.Tactics -> "Draft e moltiplicatori per run avanzate."
 }
 
+private fun formatUnlockedShipLabel(id: String): String =
+    id.removePrefix("ship_").replace("_", " ").replaceFirstChar { it.uppercase() }
+
+private fun formatPerkLabel(id: String): String =
+    id.replace('_', ' ').replaceFirstChar { it.uppercase() }
+
+private fun formatModifierLabel(id: String): String =
+    id.replace('_', ' ').replaceFirstChar { it.uppercase() }
+
 @Composable
 private fun HomeScreen(
     profile: PlayerProfile,
@@ -332,7 +361,17 @@ private fun HomeScreen(
     val ui = chrome()
     val selectedShip = content.ships.firstOrNull { it.id == profile.selectedShipId } ?: content.ships.first()
     val selectedAccent = shipAccent(selectedShip.id)
-    val pendingMissions = profile.activeMissions.count { !it.claimed }
+    val pendingContracts = profile.activeMissions.count { !it.claimed }
+    val currentNode = profile.currentCampaignNode(content)
+    val currentSector = profile.currentCampaignSector(content)
+    val nextRewardNode = profile.nextRewardCampaignNode(content)
+    val insightCards = listOf(
+        Triple("Archive rank", profile.archiveRank.toString(), PampaCyan),
+        Triple("Contracts", pendingContracts.toString(), ui.amberArgb.asColor()),
+        Triple("Perks online", profile.unlockedPerkIds.size.toString(), ui.mintArgb.asColor()),
+        Triple("Ships online", profile.unlockTree.unlockedShipIds.size.toString(), ui.mintArgb.asColor()),
+        Triple("Codex", "${profile.unlockTree.codexBiomeIds.size + profile.unlockTree.codexEnemyIds.size}", ui.lavenderArgb.asColor()),
+    )
 
     AppBackdrop {
         Column(
@@ -347,20 +386,35 @@ private fun HomeScreen(
                 profile = profile,
                 selectedShip = selectedShip,
                 accent = selectedAccent,
+                currentSector = currentSector,
+                currentNode = currentNode,
+                nextRewardNode = nextRewardNode,
                 onLaunch = { onNavigate(Route.Operations) },
                 onOpenLab = { onNavigate(Route.Lab) },
             )
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                InsightCard("Archive rank", profile.archiveRank.toString(), PampaCyan)
-                InsightCard("Pending ops", pendingMissions.toString(), ui.amberArgb.asColor())
-                InsightCard("Ships online", profile.unlockTree.unlockedShipIds.size.toString(), ui.mintArgb.asColor())
-                InsightCard("Codex", "${profile.unlockTree.codexBiomeIds.size + profile.unlockTree.codexEnemyIds.size}", ui.lavenderArgb.asColor())
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                val columns = if (maxWidth < 520.dp) 2 else 3
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    insightCards.chunked(columns).forEach { row ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            row.forEach { (label, value, accent) ->
+                                InsightCard(
+                                    label = label,
+                                    value = value,
+                                    accent = accent,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            repeat(columns - row.size) {
+                                Spacer(modifier = Modifier.weight(1f))
+                            }
+                        }
+                    }
+                }
             }
 
             SectionHeader(
@@ -383,54 +437,59 @@ private fun HomeScreen(
             }
 
             SectionHeader(
-                title = "Operations",
-                subtitle = "Meta progression, archivio e tuning del client.",
+                title = "Command",
+                subtitle = "CTA principali a colonna per leggere meglio il flusso anche in portrait.",
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                MenuTile(
+                    title = "Campagna",
+                    body = "Apri la mappa settori e lancia il prossimo obiettivo disponibile.",
+                    meta = currentNode?.let { "Prossimo nodo: ${it.label}" }
+                        ?: "Campagna completata, Endless Frontier pronta.",
+                    accent = ui.cyanArgb.asColor(),
+                    onClick = { onNavigate(Route.Operations) },
+                )
                 MenuTile(
                     title = "Laboratorio",
-                    body = "Spendi crediti in moduli permanenti e rendi piu stabili le run.",
+                    body = "Spendi crediti nei moduli permanenti e sistema il loadout pre-run.",
+                    meta = "${profile.equippedPerkIds.size}/2 perk equipaggiati",
                     accent = ui.amberArgb.asColor(),
-                    modifier = Modifier.weight(1f),
                     onClick = { onNavigate(Route.Lab) },
                 )
                 MenuTile(
                     title = "Codex",
-                    body = "Biomi, elites e boss gia incontrati dall'account.",
+                    body = "Consulta biomi, elite e boss gia registrati dal profilo.",
+                    meta = "${profile.unlockTree.codexBiomeIds.size + profile.unlockTree.codexEnemyIds.size} profili acquisiti",
                     accent = ui.lavenderArgb.asColor(),
-                    modifier = Modifier.weight(1f),
                     onClick = { onNavigate(Route.Codex) },
                 )
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 MenuTile(
-                    title = "Missioni",
-                    body = "Milestone persistenti con premi gia riversati nel profilo.",
+                    title = "Contracts",
+                    body = "Controlla le milestone persistenti ancora aperte e quanto manca al premio.",
+                    meta = if (pendingContracts > 0) "$pendingContracts ancora attivi" else "Nessun contratto in sospeso",
                     accent = ui.mintArgb.asColor(),
-                    modifier = Modifier.weight(1f),
                     onClick = { onNavigate(Route.Missions) },
                 )
                 MenuTile(
                     title = "Cronologia",
-                    body = "Ultime run, score e avanzamento archivio.",
+                    body = "Rivedi le run archiviate e confronta score, durata e progressione.",
+                    meta = "Best wave ${profile.bestWave}",
                     accent = ui.cyanArgb.asColor(),
-                    modifier = Modifier.weight(1f),
                     onClick = { onNavigate(Route.History) },
                 )
+                MenuTile(
+                    title = "Impostazioni",
+                    body = "Ritocca grafica, controlli touch, feedback e leggibilita del client.",
+                    accent = ui.cyanArgb.asColor(),
+                    icon = Icons.Rounded.Settings,
+                    onClick = { onNavigate(Route.Settings) },
+                )
             }
-            MenuTile(
-                title = "Impostazioni",
-                body = "Grafica, layout touch, audio, haptics e accessibilita.",
-                accent = ui.cyanArgb.asColor(),
-                modifier = Modifier.fillMaxWidth(),
-                icon = Icons.Rounded.Settings,
-                onClick = { onNavigate(Route.Settings) },
-            )
 
             GlassPanel(accent = ui.amberArgb.asColor()) {
-                Text("Field note", color = ui.amberArgb.asColor(), fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
+                Text("Quick read", color = ui.amberArgb.asColor(), fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
                 Text(
-                    text = "Portrait e landscape sono entrambi supportati. In portrait il gioco resta leggibile, in landscape respira meglio.",
+                    text = "La home privilegia portrait con azioni principali full-width. In landscape la gerarchia resta identica ma piu ariosa.",
                     color = ui.textArgb.asColor(),
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -450,6 +509,9 @@ private fun HeroPoster(
     profile: PlayerProfile,
     selectedShip: com.antigravity.pampastarshooter.core.content.ShipDef,
     accent: Color,
+    currentSector: CampaignSectorDef?,
+    currentNode: CampaignNodeDef?,
+    nextRewardNode: CampaignNodeDef?,
     onLaunch: () -> Unit,
     onOpenLab: () -> Unit,
 ) {
@@ -479,13 +541,36 @@ private fun HeroPoster(
                     lineHeight = 36.sp,
                 )
                 Text(
-                    text = "Arena survival mobile-first con mutatori pre-run, VFX piu netti e una shell piu curata.",
+                    text = "Campagna a settori lineare, draft in-run intatto e meta-progression piu leggibile.",
                     color = ui.mutedArgb.asColor(),
                     style = MaterialTheme.typography.bodyLarge,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     StatusChip("Best wave ${profile.bestWave}", ui.amberArgb.asColor())
                     StatusChip("${profile.credits} crediti", ui.mintArgb.asColor())
+                    StatusChip("${profile.equippedPerkIds.size}/2 perk", ui.lavenderArgb.asColor())
+                }
+                GlassPanel(accent = ui.cyanArgb.asColor(), modifier = Modifier.fillMaxWidth()) {
+                    Text("CURRENT SECTOR", color = ui.cyanArgb.asColor(), fontWeight = FontWeight.Black, fontSize = 12.sp, letterSpacing = 1.2.sp)
+                    Text(
+                        currentSector?.label ?: "Endless Frontier locked",
+                        color = ui.textArgb.asColor(),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp,
+                    )
+                    Text(
+                        currentNode?.let { "${it.label} · ${it.objective.displayLabel()}" }
+                            ?: "Campagna completata. Endless Frontier disponibile nella mappa operazioni.",
+                        color = ui.mutedArgb.asColor(),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        nextRewardNode?.let { "Next unlock: ${campaignRewardSummary(it)}" }
+                            ?: "Tutti i reward principali della campagna sono gia online.",
+                        color = ui.amberArgb.asColor(),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                    )
                 }
                 GlassPanel(accent = accent, modifier = Modifier.fillMaxWidth()) {
                     Text(selectedShip.label.uppercase(), color = accent, fontWeight = FontWeight.Black, fontSize = 12.sp, letterSpacing = 1.2.sp)
@@ -505,7 +590,7 @@ private fun HeroPoster(
                     ) {
                         Icon(Icons.Rounded.PlayArrow, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Open operations", fontWeight = FontWeight.Bold)
+                        Text("Apri campagna", fontWeight = FontWeight.Bold)
                     }
                     OutlinedButton(
                         onClick = onOpenLab,
@@ -596,9 +681,10 @@ private fun InsightCard(
     label: String,
     value: String,
     accent: Color,
+    modifier: Modifier = Modifier,
 ) {
     val ui = chrome()
-    GlassPanel(modifier = Modifier.width(148.dp), accent = accent) {
+    GlassPanel(modifier = modifier, accent = accent) {
         Text(label.uppercase(), color = accent, fontWeight = FontWeight.Bold, fontSize = 11.sp, letterSpacing = 1.sp)
         Text(value, color = ui.textArgb.asColor(), fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace, fontSize = 28.sp)
     }
@@ -671,17 +757,39 @@ private fun MenuTile(
     title: String,
     body: String,
     accent: Color,
-    modifier: Modifier,
+    modifier: Modifier = Modifier,
+    meta: String? = null,
     icon: ImageVector? = null,
     onClick: () -> Unit,
 ) {
     val ui = chrome()
-    GlassPanel(modifier = modifier.clickable(onClick = onClick), accent = accent) {
-        if (icon != null) {
-            Icon(icon, contentDescription = null, tint = accent)
+    GlassPanel(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        accent = accent,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Top,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (icon != null) {
+                    Icon(icon, contentDescription = null, tint = accent)
+                }
+                Text(title, color = ui.textArgb.asColor(), fontWeight = FontWeight.Black, fontSize = 18.sp)
+                Text(body, color = ui.mutedArgb.asColor(), style = MaterialTheme.typography.bodyMedium)
+                meta?.let {
+                    Text(it, color = accent, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                }
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            StatusChip("Open", accent)
         }
-        Text(title, color = ui.textArgb.asColor(), fontWeight = FontWeight.Black, fontSize = 18.sp)
-        Text(body, color = ui.mutedArgb.asColor(), style = MaterialTheme.typography.bodyMedium)
     }
 }
 
@@ -726,7 +834,7 @@ private fun OnboardingOverlay(
                 )
                 TutorialTip("Movement", "Joystick sinistro per kite, spacing e sopravvivenza.")
                 TutorialTip("Abilities", "Dash, Pulse, Shield e Mine hanno ruoli diversi. Non sprecarli insieme.")
-                TutorialTip("Meta", "Dopo ogni run torna nel laboratorio e reinvesti i crediti.")
+                TutorialTip("Campaign", "Spingi la mappa a settori, sblocca perk e poi rifinisci il loadout nel laboratorio.")
                 FilledTonalButton(
                     onClick = onDismiss,
                     modifier = Modifier.fillMaxWidth(),
@@ -751,9 +859,17 @@ private fun TutorialTip(
     }
 }
 
+private fun campaignRewardSummary(node: CampaignNodeDef): String =
+    buildList {
+        addAll(node.rewardShipIds.map(::formatUnlockedShipLabel))
+        addAll(node.rewardPerkIds.map(::formatPerkLabel))
+        addAll(node.rewardModifierIds.map(::formatModifierLabel))
+        if (node.unlockEndless) add("Endless Frontier")
+    }.joinToString()
+
 private fun shipUnlockRequirement(shipId: String): String = when (shipId) {
-    DefaultGameContent.ShipWarden -> "Unlock at wave 4."
-    DefaultGameContent.ShipSpecter -> "Unlock at wave 8 or after 3 bosses."
+    DefaultGameContent.ShipWarden -> "Reward del boss di Neon Docks."
+    DefaultGameContent.ShipSpecter -> "Reward del boss di Obsidian Relay."
     else -> "Starter frame."
 }
 
@@ -764,23 +880,24 @@ private fun OperationsScreen(
     selectedModifierIds: List<String>,
     onBack: () -> Unit,
     onModifierChange: (List<String>) -> Unit,
-    onLaunch: (List<String>) -> Unit,
+    onLaunch: (PendingRunSetup) -> Unit,
 ) {
     val ui = chrome()
     val ship = content.ships.firstOrNull { it.id == profile.selectedShipId } ?: content.ships.first()
     val accent = shipAccent(ship.id)
-    val unlockedModifierIds = content.runModifiers
-        .filter { profile.archiveRank >= it.requiredArchiveRank }
-        .map { it.id }
-        .toSet()
+    val currentNode = profile.currentCampaignNode(content)
+    val currentSector = profile.currentCampaignSector(content)
+    val unlockedModifierIds = profile.unlockedRunModifierIds(content)
+    val visibleModifiers = content.runModifiers.filter { it.id in unlockedModifierIds }
     val selected = selectedModifierIds.filter { it in unlockedModifierIds }.take(2)
+    val completedNodes = profile.campaignState.completedNodeIds
     val scoreMultiplier = selected.fold(1f) { acc, modifierId ->
         acc * (content.runModifiers.firstOrNull { it.id == modifierId }?.scoreMultiplier ?: 1f)
     }
 
     PosterScaffold(
-        title = "Operations",
-        subtitle = "Configure ship, mutators, and score risk before the run.",
+        title = "Campaign Map",
+        subtitle = "Lancia il prossimo nodo o, se sbloccata, apri Endless Frontier.",
         onBack = onBack,
     ) {
         Column(
@@ -790,7 +907,7 @@ private fun OperationsScreen(
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             GlassPanel(accent = accent) {
-                StatusChip("SELECTED FRAME", accent)
+                StatusChip("ACTIVE FRAME", accent)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -805,6 +922,11 @@ private fun OperationsScreen(
                             StatusChip("Hull ${ship.maxHp.toInt()}", ui.amberArgb.asColor())
                             StatusChip("Pulse ${ship.pulseCooldown.toInt()}s", ui.lavenderArgb.asColor())
                         }
+                        Text(
+                            currentNode?.let { "Current node: ${it.label} · ${it.objective.displayLabel()}" }
+                                ?: "Campagna completata. Endless Frontier pronta.",
+                            color = ui.mutedArgb.asColor(),
+                        )
                     }
                     Image(
                         painter = painterResource(
@@ -821,57 +943,116 @@ private fun OperationsScreen(
             }
 
             GlassPanel(accent = ui.cyanArgb.asColor()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("RUN MUTATORS", color = ui.textArgb.asColor(), fontWeight = FontWeight.Black, fontSize = 22.sp)
-                        Text("Select up to 2 unlocked mutators.", color = ui.mutedArgb.asColor())
-                    }
-                    StatusChip("${selected.size}/2 selected", ui.cyanArgb.asColor())
-                }
-                content.runModifiers.forEach { modifier ->
-                    val unlocked = profile.archiveRank >= modifier.requiredArchiveRank
-                    val isSelected = modifier.id in selected
-                    ModifierCard(
-                        modifierDef = modifier,
-                        unlocked = unlocked,
-                        selected = isSelected,
-                        onToggle = {
-                            if (!unlocked) return@ModifierCard
-                            val next = when {
-                                isSelected -> selected - modifier.id
-                                selected.size >= 2 -> selected.drop(1) + modifier.id
-                                else -> selected + modifier.id
-                            }
-                            onModifierChange(next)
-                        },
+                Text("SECTOR CHAIN", color = ui.cyanArgb.asColor(), fontWeight = FontWeight.Black, fontSize = 20.sp)
+                Text("Ogni settore ha 4 nodi fissi. Il prossimo nodo disponibile e l'unico lanciabile in campagna.", color = ui.mutedArgb.asColor())
+                content.campaignSectors.forEach { sector ->
+                    SectionHeader(
+                        title = sector.label,
+                        subtitle = sector.subtitle,
                     )
+                    sector.nodes.forEach { node ->
+                        CampaignNodeCard(
+                            node = node,
+                            sector = sector,
+                            completed = node.id in completedNodes,
+                            active = currentNode?.id == node.id,
+                        )
+                    }
                 }
             }
 
-            GlassPanel(accent = ui.amberArgb.asColor()) {
-                Text("RISK PREVIEW", color = ui.amberArgb.asColor(), fontWeight = FontWeight.Black, fontSize = 20.sp)
-                Text("Projected score multiplier and current mission pressure for the next run.", color = ui.mutedArgb.asColor())
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    StatusChip("x${"%.2f".format(scoreMultiplier)} score", ui.amberArgb.asColor())
-                    StatusChip("Rank ${profile.archiveRank}", accent)
-                    StatusChip("${profile.activeMissions.count { !it.claimed }} active ops", ui.mintArgb.asColor())
+            if (currentNode != null && currentSector != null) {
+                Button(
+                    onClick = {
+                        onLaunch(
+                            PendingRunSetup(
+                                mode = RunMode.Campaign,
+                                campaignNodeId = currentNode.id,
+                                forcedBiomeId = currentSector.biomeId,
+                                objective = currentNode.objective,
+                                modifiers = emptyList(),
+                            ),
+                        )
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = Color.Black),
+                ) {
+                    Icon(Icons.Rounded.PlayArrow, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Launch ${currentNode.label}", fontWeight = FontWeight.Bold)
                 }
             }
 
-            Button(
-                onClick = { onLaunch(selected) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = Color.Black),
-            ) {
-                Icon(Icons.Rounded.PlayArrow, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("Launch run", fontWeight = FontWeight.Bold)
+            if (profile.campaignState.endlessUnlocked) {
+                GlassPanel(accent = ui.amberArgb.asColor()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("ENDLESS FRONTIER", color = ui.amberArgb.asColor(), fontWeight = FontWeight.Black, fontSize = 22.sp)
+                            Text("Qui i mutatori tornano manuali. Seleziona fino a 2 rischi.", color = ui.mutedArgb.asColor())
+                        }
+                        StatusChip("${selected.size}/2 selected", ui.amberArgb.asColor())
+                    }
+                    if (visibleModifiers.isEmpty()) {
+                        Text(
+                            "Nessun mutator sbloccato ancora. Continua la campagna per espandere Endless.",
+                            color = ui.mutedArgb.asColor(),
+                        )
+                    }
+                    visibleModifiers.forEach { modifier ->
+                        val unlocked = modifier.id in unlockedModifierIds
+                        val isSelected = modifier.id in selected
+                        ModifierCard(
+                            modifierDef = modifier,
+                            unlocked = unlocked,
+                            selected = isSelected,
+                            onToggle = {
+                                if (!unlocked) return@ModifierCard
+                                val next = when {
+                                    isSelected -> selected - modifier.id
+                                    selected.size >= 2 -> selected.drop(1) + modifier.id
+                                    else -> selected + modifier.id
+                                }
+                                onModifierChange(next)
+                            },
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        StatusChip("x${"%.2f".format(scoreMultiplier)} score", ui.amberArgb.asColor())
+                        StatusChip("${profile.activeMissions.count { !it.claimed }} contracts", ui.mintArgb.asColor())
+                    }
+                    if (visibleModifiers.size < content.runModifiers.size) {
+                        Text(
+                            "Gli altri mutator compaiono solo dopo i reward boss corrispondenti.",
+                            color = ui.mutedArgb.asColor(),
+                            fontSize = 12.sp,
+                        )
+                    }
+                }
+
+                Button(
+                    onClick = {
+                        onLaunch(
+                            PendingRunSetup(
+                                mode = RunMode.Endless,
+                                modifiers = selected,
+                            ),
+                        )
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = ui.amberArgb.asColor(), contentColor = Color.Black),
+                ) {
+                    Icon(Icons.Rounded.PlayArrow, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Launch Endless Frontier", fontWeight = FontWeight.Bold)
+                }
             }
             Spacer(modifier = Modifier.navigationBarsPadding())
         }
@@ -912,7 +1093,7 @@ private fun ModifierCard(
                 Text(modifierDef.description, color = ui.mutedArgb.asColor())
                 Text(
                     if (unlocked) "Risk ${modifierDef.riskLabel} | x${"%.2f".format(modifierDef.scoreMultiplier)} score"
-                    else "Unlock at archive rank ${modifierDef.requiredArchiveRank}",
+                    else "Locked until the matching boss reward is secured.",
                     color = accent,
                     fontWeight = FontWeight.Bold,
                     fontSize = 12.sp,
@@ -931,18 +1112,66 @@ private fun ModifierCard(
 }
 
 @Composable
+private fun CampaignNodeCard(
+    node: CampaignNodeDef,
+    sector: CampaignSectorDef,
+    completed: Boolean,
+    active: Boolean,
+) {
+    val ui = chrome()
+    val accent = when (node.kind) {
+        CampaignNodeKind.Recon -> ui.cyanArgb.asColor()
+        CampaignNodeKind.Sweep -> ui.amberArgb.asColor()
+        CampaignNodeKind.Salvage -> ui.mintArgb.asColor()
+        CampaignNodeKind.Boss -> ui.lavenderArgb.asColor()
+    }
+    FeatureCard(
+        title = "${node.label} · ${sector.label}",
+        body = node.description,
+        meta = buildString {
+            append(node.objective.displayLabel())
+            val reward = campaignRewardSummary(node)
+            if (reward.isNotBlank()) {
+                append(" | ")
+                append(reward)
+            }
+        },
+        accent = accent,
+    ) {
+        StatusChip(
+            text = when {
+                completed -> "Cleared"
+                active -> "Next"
+                else -> "Locked"
+            },
+            accent = accent,
+        )
+    }
+}
+
+@Composable
 private fun LabScreen(
     profile: PlayerProfile,
     content: GameContentBundle,
     onBack: () -> Unit,
     onUpgrade: (String) -> Unit,
+    onSetEquippedPerks: (List<String>) -> Unit,
 ) {
-    val investedLevels = content.permanentModules.sumOf { profile.unlockTree.permanentModules[it.id] ?: 0 }
-    val totalLevels = content.permanentModules.sumOf { it.maxLevel }
-    val affordableProjects = content.permanentModules.count { module ->
+    val visibleModules = content.permanentModules.filter(profile::isPermanentModuleAvailable)
+    val investedLevels = visibleModules.sumOf { profile.unlockTree.permanentModules[it.id] ?: 0 }
+    val totalLevels = visibleModules.sumOf { it.maxLevel }
+    val affordableProjects = visibleModules.count { module ->
         val level = profile.unlockTree.permanentModules[module.id] ?: 0
         level < module.maxLevel && profile.credits >= module.upgradeCost(level)
     }
+    val nextUnlockRank = content.permanentModules
+        .filterNot(profile::isPermanentModuleAvailable)
+        .minOfOrNull { it.unlockArchiveRank }
+    val nextUnlocks = content.permanentModules
+        .filter { nextUnlockRank != null && it.unlockArchiveRank == nextUnlockRank }
+    val unlockedPerks = content.perks
+        .filter { it.id in profile.unlockedPerkIds }
+        .sortedByDescending { it.id in profile.equippedPerkIds }
     PosterScaffold(
         title = "Laboratorio",
         subtitle = "Potenzia il telaio account-wide e spingi il meta sempre piu avanti.",
@@ -957,15 +1186,73 @@ private fun LabScreen(
                 GlassPanel(accent = PampaAmber) {
                     Text("CREDIT RESERVE", color = PampaAmber, fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
                     Text("${profile.credits} crediti", color = PampaText, fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace, fontSize = 30.sp)
-                    Text("Ogni upgrade modella tutte le run future. I costi ora crescono piu in fretta e il laboratorio e stato ampliato.", color = PampaMuted)
+                    Text("I moduli si aprono a scaglioni con l'Archive rank. Due perk equipaggiati al massimo.", color = PampaMuted)
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         StatusChip("$affordableProjects pronti", PampaMint)
                         StatusChip("$investedLevels/$totalLevels livelli", PampaCyan)
+                        StatusChip("${profile.equippedPerkIds.size}/2 perk", PampaLavender)
+                    }
+                    if (nextUnlockRank != null && nextUnlocks.isNotEmpty()) {
+                        Text(
+                            "Archive rank $nextUnlockRank sblocca: ${nextUnlocks.joinToString { it.label }}",
+                            color = PampaMuted,
+                            fontSize = 12.sp,
+                        )
                     }
                 }
             }
+            item {
+                SectionHeader(
+                    title = "Perk Loadout",
+                    subtitle = "Qui compaiono solo i perk gia ottenuti. Equipaggiane fino a 2 prima di lanciare una run.",
+                )
+            }
+            if (unlockedPerks.isEmpty()) {
+                item {
+                    GlassPanel(accent = PampaLavender) {
+                        Text("Nessun perk disponibile", color = PampaText, fontWeight = FontWeight.Black, fontSize = 18.sp)
+                        Text(
+                            "I perk si sbloccano con i boss di campagna. Quando ne ottieni uno comparira qui automaticamente.",
+                            color = PampaMuted,
+                        )
+                    }
+                }
+            }
+            items(unlockedPerks, key = { it.id }) { perk ->
+                val equipped = perk.id in profile.equippedPerkIds
+                FeatureCard(
+                    title = perk.label,
+                    body = perk.description,
+                    meta = perk.flavor,
+                    accent = perk.accentColor.asColor(),
+                ) {
+                    val nextLoadout = when {
+                        equipped -> profile.equippedPerkIds - perk.id
+                        profile.equippedPerkIds.size >= 2 -> profile.equippedPerkIds.drop(1) + perk.id
+                        else -> profile.equippedPerkIds + perk.id
+                    }
+                    Button(
+                        onClick = { onSetEquippedPerks(nextLoadout) },
+                        colors = ButtonDefaults.buttonColors(containerColor = perk.accentColor.asColor(), contentColor = Color.Black),
+                    ) {
+                        Text(
+                            when {
+                                equipped -> "Equipped"
+                                else -> "Equip"
+                            },
+                        )
+                    }
+                }
+            }
+            item {
+                SectionHeader(
+                    title = "Core Modules",
+                    subtitle = "Upgrade permanenti account-wide che restano sempre attivi.",
+                )
+            }
             LabCategory.values().forEach { category ->
-                val modules = content.permanentModules.filter { it.category == category }
+                val modules = visibleModules.filter { it.category == category }
+                if (modules.isEmpty()) return@forEach
                 item {
                     SectionHeader(
                         title = categoryLabel(category),
@@ -1056,8 +1343,8 @@ private fun MissionsScreen(
     onBack: () -> Unit,
 ) {
     PosterScaffold(
-        title = "Missioni",
-        subtitle = "Milestone persistenti dell'account e premi gia assorbiti dal profilo.",
+        title = "Contracts",
+        subtitle = "Obiettivi persistenti secondari dell'account con premi gia assorbiti nel profilo.",
         onBack = onBack,
     ) {
         LazyColumn(
@@ -1102,6 +1389,7 @@ private fun SettingsScreen(
     onBack: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
+    val graphicsProfiles = GraphicsProfile.values().toList()
     PosterScaffold(
         title = "Impostazioni",
         subtitle = "Ottimizza feedback, layout touch e leggibilita dell'arena.",
@@ -1115,16 +1403,27 @@ private fun SettingsScreen(
         ) {
             GlassPanel(accent = PampaCyan) {
                 Text("Grafica", color = PampaText, fontWeight = FontWeight.Black, fontSize = 20.sp)
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    GraphicsProfile.values().forEach { profile ->
-                        FilterChip(
-                            selected = settings.graphicsProfile == profile,
-                            onClick = { scope.launch { repository.setGraphicsProfile(profile) } },
-                            label = { Text(profile.name) },
-                        )
+                BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                    val columns = if (maxWidth < 520.dp) 2 else 3
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        graphicsProfiles.chunked(columns).forEach { row ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                row.forEach { profile ->
+                                    FilterChip(
+                                        selected = settings.graphicsProfile == profile,
+                                        onClick = { scope.launch { repository.setGraphicsProfile(profile) } },
+                                        label = { Text(profile.name) },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                                repeat(columns - row.size) {
+                                    Spacer(modifier = Modifier.weight(1f))
+                                }
+                            }
+                        }
                     }
                 }
                 SettingSwitch("Low VFX", settings.lowVfx) { scope.launch { repository.setLowVfx(it) } }
@@ -1199,19 +1498,33 @@ private fun FeatureCard(
 ) {
     val ui = chrome()
     GlassPanel(modifier = Modifier.fillMaxWidth(), accent = accent) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.Top,
-        ) {
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(title, color = ui.textArgb.asColor(), fontWeight = FontWeight.Black, fontSize = 18.sp)
-                Text(body, color = ui.mutedArgb.asColor())
-                Text(meta, color = accent, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-            }
-            if (trailing != null) {
-                Spacer(modifier = Modifier.width(12.dp))
-                trailing()
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val compact = maxWidth < 420.dp
+            if (trailing != null && compact) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(title, color = ui.textArgb.asColor(), fontWeight = FontWeight.Black, fontSize = 18.sp)
+                        Text(body, color = ui.mutedArgb.asColor())
+                        Text(meta, color = accent, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
+                    trailing()
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(title, color = ui.textArgb.asColor(), fontWeight = FontWeight.Black, fontSize = 18.sp)
+                        Text(body, color = ui.mutedArgb.asColor())
+                        Text(meta, color = accent, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
+                    if (trailing != null) {
+                        Spacer(modifier = Modifier.width(12.dp))
+                        trailing()
+                    }
+                }
             }
         }
     }

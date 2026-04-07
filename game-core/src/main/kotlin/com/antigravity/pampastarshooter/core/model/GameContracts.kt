@@ -1,9 +1,13 @@
 package com.antigravity.pampastarshooter.core.model
 
+import com.antigravity.pampastarshooter.core.content.CampaignNodeDef
+import com.antigravity.pampastarshooter.core.content.CampaignSectorDef
 import com.antigravity.pampastarshooter.core.content.CardRarity
+import com.antigravity.pampastarshooter.core.content.DefaultGameContent
 import com.antigravity.pampastarshooter.core.content.GameContentBundle
 import com.antigravity.pampastarshooter.core.content.MissionMetric
 import com.antigravity.pampastarshooter.core.content.UpgradeCategory
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -20,6 +24,41 @@ enum class GraphicsProfile {
     Auto,
     Clean,
     Dense,
+}
+
+@Serializable
+enum class RunMode {
+    Campaign,
+    Endless,
+}
+
+@Serializable
+sealed class RunObjective {
+    abstract val target: Int
+
+    @Serializable
+    @SerialName("reach_wave")
+    data class ReachWave(
+        override val target: Int,
+    ) : RunObjective()
+
+    @Serializable
+    @SerialName("kill_count")
+    data class KillCount(
+        override val target: Int,
+    ) : RunObjective()
+
+    @Serializable
+    @SerialName("earn_credits")
+    data class EarnCredits(
+        override val target: Int,
+    ) : RunObjective()
+
+    @Serializable
+    @SerialName("defeat_boss")
+    data class DefeatBoss(
+        override val target: Int = 1,
+    ) : RunObjective()
 }
 
 @Serializable
@@ -50,6 +89,12 @@ data class RunModifier(
     val scoreMultiplier: Float,
     val requiredArchiveRank: Int = 1,
     val riskLabel: String = "",
+)
+
+@Serializable
+data class CampaignState(
+    val completedNodeIds: Set<String> = emptySet(),
+    val endlessUnlocked: Boolean = false,
 )
 
 @Serializable
@@ -88,7 +133,7 @@ data class MissionState(
 
 @Serializable
 data class PlayerProfile(
-    val version: Int = 1,
+    val version: Int = CURRENT_PROFILE_VERSION,
     val credits: Int = 0,
     val archiveXp: Int = 0,
     val archiveRank: Int = 1,
@@ -101,6 +146,9 @@ data class PlayerProfile(
     val selectedShipId: String,
     val tutorialSeen: Boolean = false,
     val unlockTree: UnlockTree = UnlockTree(),
+    val campaignState: CampaignState = CampaignState(),
+    val unlockedPerkIds: Set<String> = emptySet(),
+    val equippedPerkIds: List<String> = emptyList(),
     val activeMissions: List<MissionState> = emptyList(),
 )
 
@@ -108,6 +156,10 @@ data class PlayerProfile(
 data class RunConfig(
     val shipId: String,
     val seed: Long,
+    val mode: RunMode = RunMode.Campaign,
+    val campaignNodeId: String? = null,
+    val forcedBiomeId: String? = null,
+    val objective: RunObjective? = null,
     val modifiers: List<String> = emptyList(),
     val hudLayout: HudLayout = HudLayout(),
 )
@@ -132,6 +184,8 @@ data class RunHistoryEntry(
 data class RunResult(
     val config: RunConfig,
     val shipId: String,
+    val success: Boolean,
+    val campaignNodeId: String? = null,
     val durationSeconds: Int,
     val waveReached: Int,
     val biomeId: String,
@@ -143,6 +197,7 @@ data class RunResult(
     val discoveredEnemyIds: Set<String>,
     val discoveredBiomeIds: Set<String>,
     val unlockedShipIds: Set<String>,
+    val unlockedPerkIds: Set<String>,
     val historyEntry: RunHistoryEntry,
 )
 
@@ -173,6 +228,8 @@ data class PlayerSnapshot(
     val pulseCooldown: Float,
     val shieldCooldown: Float,
     val mineCooldown: Float,
+    val hasShield: Boolean,
+    val hasMine: Boolean,
     val activeShipColor: Long,
     val trailColor: Long,
 )
@@ -250,6 +307,14 @@ data class WarningSnapshot(
     val timeLeft: Float,
 )
 
+data class ObjectiveSnapshot(
+    val label: String,
+    val progress: Int,
+    val target: Int,
+    val progressLabel: String,
+    val completed: Boolean,
+)
+
 data class MissionSnapshot(
     val id: String,
     val label: String,
@@ -298,6 +363,8 @@ data class HudSnapshot(
     val credits: Int,
     val archiveXpProjected: Int,
     val activeEventLabel: String?,
+    val modeLabel: String = "",
+    val objective: ObjectiveSnapshot? = null,
 )
 
 data class FrameSnapshot(
@@ -334,33 +401,50 @@ interface GameEngine {
     fun resume()
 }
 
+const val CURRENT_PROFILE_VERSION = 2
+
 fun rankXpRequirement(rank: Int): Int = 30 + (rank - 1) * 18
 
 fun PlayerProfile.applyRunResult(
     result: RunResult,
     content: GameContentBundle,
 ): PlayerProfile {
-    var newCredits = credits + result.creditsEarned
-    var newArchiveXp = archiveXp + result.archiveXpEarned
-    var newArchiveRank = archiveRank
+    val current = normalizeForContent(content)
+    var newCredits = current.credits + result.creditsEarned
+    var newArchiveXp = current.archiveXp + result.archiveXpEarned
+    var newArchiveRank = current.archiveRank
 
     while (newArchiveXp >= rankXpRequirement(newArchiveRank)) {
         newArchiveXp -= rankXpRequirement(newArchiveRank)
         newArchiveRank++
     }
 
-    val updatedUnlocks = unlockTree.copy(
-        unlockedShipIds = unlockTree.unlockedShipIds + result.unlockedShipIds,
-        codexEnemyIds = unlockTree.codexEnemyIds + result.discoveredEnemyIds,
-        codexBiomeIds = unlockTree.codexBiomeIds + result.discoveredBiomeIds,
+    val updatedCampaignState = current.campaignState.let { state ->
+        if (!result.success || result.campaignNodeId == null) {
+            state
+        } else {
+            val node = content.findCampaignNode(result.campaignNodeId)
+            state.copy(
+                completedNodeIds = if (node == null) state.completedNodeIds else state.completedNodeIds + node.id,
+                endlessUnlocked = state.endlessUnlocked || (node?.unlockEndless == true),
+            )
+        }
+    }
+    val unlockedShipsFromResult = if (result.success) result.unlockedShipIds else emptySet()
+    val unlockedPerksFromResult = if (result.success) result.unlockedPerkIds else emptySet()
+
+    val updatedUnlocks = current.unlockTree.copy(
+        unlockedShipIds = current.unlockTree.unlockedShipIds + unlockedShipsFromResult,
+        codexEnemyIds = current.unlockTree.codexEnemyIds + result.discoveredEnemyIds,
+        codexBiomeIds = current.unlockTree.codexBiomeIds + result.discoveredBiomeIds,
     )
 
-    val existingMissionIds = activeMissions.map { it.id }.toSet()
+    val existingMissionIds = current.activeMissions.map { it.id }.toSet()
     val normalizedMissionCursor = maxOf(
         updatedUnlocks.nextMetaMissionIndex,
         content.metaMissionPool.indexOfLast { it.id in existingMissionIds } + 1,
     ).coerceAtLeast(0)
-    val seededMissions = if (activeMissions.isEmpty()) {
+    val seededMissions = if (current.activeMissions.isEmpty()) {
         seedMetaMissions(
             content = content,
             completedIds = updatedUnlocks.completedMetaMissionIds,
@@ -368,16 +452,16 @@ fun PlayerProfile.applyRunResult(
             slots = 3,
         ).first
     } else {
-        activeMissions
+        current.activeMissions
     }
 
     var updatedMissions = seededMissions.map { mission ->
         val progressValue = when (mission.metric) {
-            MissionMetric.Runs -> totalRuns + 1
-            MissionMetric.Kills -> totalKills + result.kills
-            MissionMetric.Waves -> maxOf(bestWave, result.waveReached)
-            MissionMetric.Bosses -> totalBosses + result.bossesDefeated
-            MissionMetric.Credits -> totalCreditsEarned + result.creditsEarned
+            MissionMetric.Runs -> current.totalRuns + 1
+            MissionMetric.Kills -> current.totalKills + result.kills
+            MissionMetric.Waves -> maxOf(current.bestWave, result.waveReached)
+            MissionMetric.Bosses -> current.totalBosses + result.bossesDefeated
+            MissionMetric.Credits -> current.totalCreditsEarned + result.creditsEarned
         }
         mission.copy(
             progress = progressValue.coerceAtMost(mission.target),
@@ -414,19 +498,22 @@ fun PlayerProfile.applyRunResult(
         newArchiveRank++
     }
 
-    return copy(
+    return current.copy(
+        version = CURRENT_PROFILE_VERSION,
         credits = newCredits,
         archiveXp = newArchiveXp,
         archiveRank = newArchiveRank,
-        bestWave = maxOf(bestWave, result.waveReached),
-        bestScore = maxOf(bestScore, result.score),
-        totalRuns = totalRuns + 1,
-        totalKills = totalKills + result.kills,
-        totalBosses = totalBosses + result.bossesDefeated,
-        totalCreditsEarned = totalCreditsEarned + result.creditsEarned,
+        bestWave = maxOf(current.bestWave, result.waveReached),
+        bestScore = maxOf(current.bestScore, result.score),
+        totalRuns = current.totalRuns + 1,
+        totalKills = current.totalKills + result.kills,
+        totalBosses = current.totalBosses + result.bossesDefeated,
+        totalCreditsEarned = current.totalCreditsEarned + result.creditsEarned,
         unlockTree = updatedUnlockState,
+        campaignState = updatedCampaignState,
+        unlockedPerkIds = current.unlockedPerkIds + unlockedPerksFromResult,
         activeMissions = updatedMissions,
-    )
+    ).normalizeForContent(content)
 }
 
 private fun seedMetaMissions(
@@ -494,4 +581,125 @@ private inline fun <T, R : Any> List<T>.mapNotNullIndexed(transform: (Int, T) ->
         transform(index, item)?.let(result::add)
     }
     return result
+}
+
+fun RunObjective.progressValue(
+    wave: Int,
+    kills: Int,
+    credits: Int,
+    bosses: Int,
+): Int = when (this) {
+    is RunObjective.ReachWave -> wave
+    is RunObjective.KillCount -> kills
+    is RunObjective.EarnCredits -> credits
+    is RunObjective.DefeatBoss -> bosses
+}
+
+fun RunObjective.displayLabel(): String = when (this) {
+    is RunObjective.ReachWave -> "Reach wave $target"
+    is RunObjective.KillCount -> "Eliminate $target enemies"
+    is RunObjective.EarnCredits -> "Bank $target credits"
+    is RunObjective.DefeatBoss -> "Defeat the sector boss"
+}
+
+fun RunObjective.progressLabel(progress: Int): String = when (this) {
+    is RunObjective.DefeatBoss -> "${progress.coerceAtMost(target)}/$target boss"
+    else -> "${progress.coerceAtMost(target)}/$target"
+}
+
+fun CampaignNodeDef.hasRewards(): Boolean =
+    rewardShipIds.isNotEmpty() ||
+        rewardPerkIds.isNotEmpty() ||
+        rewardModifierIds.isNotEmpty() ||
+        unlockEndless
+
+fun GameContentBundle.allCampaignNodes(): List<CampaignNodeDef> = campaignSectors.flatMap { it.nodes }
+
+fun GameContentBundle.findCampaignNode(id: String): CampaignNodeDef? =
+    allCampaignNodes().firstOrNull { it.id == id }
+
+fun GameContentBundle.findCampaignSector(nodeId: String): CampaignSectorDef? =
+    campaignSectors.firstOrNull { sector -> sector.nodes.any { it.id == nodeId } }
+
+fun PlayerProfile.currentCampaignNode(content: GameContentBundle): CampaignNodeDef? =
+    content.allCampaignNodes().firstOrNull { it.id !in campaignState.completedNodeIds }
+
+fun PlayerProfile.currentCampaignSector(content: GameContentBundle): CampaignSectorDef? =
+    currentCampaignNode(content)?.let { node -> content.findCampaignSector(node.id) }
+
+fun PlayerProfile.nextRewardCampaignNode(content: GameContentBundle): CampaignNodeDef? =
+    content.allCampaignNodes().firstOrNull { node ->
+        node.id !in campaignState.completedNodeIds && node.hasRewards()
+    }
+
+fun PlayerProfile.unlockedRunModifierIds(content: GameContentBundle): Set<String> =
+    content.allCampaignNodes()
+        .filter { it.id in campaignState.completedNodeIds }
+        .flatMap { it.rewardModifierIds }
+        .toSet()
+
+fun PlayerProfile.isPermanentModuleAvailable(module: com.antigravity.pampastarshooter.core.content.PermanentModuleDef): Boolean =
+    archiveRank >= module.unlockArchiveRank || (unlockTree.permanentModules[module.id] ?: 0) > 0
+
+fun PlayerProfile.normalizeForContent(content: GameContentBundle): PlayerProfile {
+    val migrated = if (version < CURRENT_PROFILE_VERSION) migrateLegacyProgression(content) else this
+    val rewardedNodes = content.allCampaignNodes().filter { it.id in migrated.campaignState.completedNodeIds }
+    val rewardedShips = rewardedNodes.flatMap { it.rewardShipIds }.toSet() + DefaultGameContent.ShipStriker
+    val rewardedPerks = rewardedNodes.flatMap { it.rewardPerkIds }.toSet()
+    val contentModuleIds = content.permanentModules.mapTo(mutableSetOf()) { it.id }
+    val normalizedModuleLevels = migrated.unlockTree.permanentModules
+        .filter { (id, level) -> id in contentModuleIds && level > 0 }
+        .toMutableMap()
+    content.permanentModules
+        .filter(migrated::isPermanentModuleAvailable)
+        .forEach { module ->
+            normalizedModuleLevels[module.id] = migrated.unlockTree.permanentModules[module.id] ?: 0
+        }
+    val normalizedUnlockTree = migrated.unlockTree.copy(
+        unlockedShipIds = migrated.unlockTree.unlockedShipIds + rewardedShips,
+        permanentModules = normalizedModuleLevels,
+    )
+    val normalizedPerks = migrated.unlockedPerkIds + rewardedPerks
+    val normalizedEquippedPerks = migrated.equippedPerkIds
+        .filter { it in normalizedPerks }
+        .distinct()
+        .take(2)
+    val selectedShip = migrated.selectedShipId.takeIf { it in normalizedUnlockTree.unlockedShipIds }
+        ?: normalizedUnlockTree.unlockedShipIds.firstOrNull()
+        ?: DefaultGameContent.ShipStriker
+
+    return migrated.copy(
+        version = CURRENT_PROFILE_VERSION,
+        selectedShipId = selectedShip,
+        unlockTree = normalizedUnlockTree,
+        unlockedPerkIds = normalizedPerks,
+        equippedPerkIds = normalizedEquippedPerks,
+    )
+}
+
+fun PlayerProfile.migrateLegacyProgression(content: GameContentBundle): PlayerProfile {
+    val completedSectorCount = when {
+        archiveRank >= 6 || bestWave >= 12 -> 3
+        DefaultGameContent.ShipSpecter in unlockTree.unlockedShipIds || bestWave >= 8 || totalBosses >= 3 -> 2
+        DefaultGameContent.ShipWarden in unlockTree.unlockedShipIds || bestWave >= 4 -> 1
+        else -> 0
+    }
+    val completedNodeIds = content.campaignSectors
+        .take(completedSectorCount)
+        .flatMap { it.nodes }
+        .mapTo(mutableSetOf()) { it.id }
+    val rewardedNodes = content.allCampaignNodes().filter { it.id in completedNodeIds }
+
+    return copy(
+        version = CURRENT_PROFILE_VERSION,
+        campaignState = CampaignState(
+            completedNodeIds = completedNodeIds,
+            endlessUnlocked = completedSectorCount >= content.campaignSectors.size,
+        ),
+        unlockTree = unlockTree.copy(
+            unlockedShipIds = unlockTree.unlockedShipIds + rewardedNodes.flatMap { it.rewardShipIds }.toSet() + DefaultGameContent.ShipStriker,
+        ),
+        unlockedPerkIds = unlockedPerkIds + rewardedNodes.flatMap { it.rewardPerkIds }.toSet(),
+        equippedPerkIds = equippedPerkIds.distinct().take(2),
+    )
 }

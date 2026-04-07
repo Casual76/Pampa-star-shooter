@@ -6,7 +6,22 @@ import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -15,8 +30,22 @@ import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.FlashOn
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.TripOrigin
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -28,14 +57,28 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.antigravity.pampastarshooter.AppContainer
+import com.antigravity.pampastarshooter.core.content.GameContentBundle
 import com.antigravity.pampastarshooter.core.engine.PampaGameEngine
-import com.antigravity.pampastarshooter.core.model.*
+import com.antigravity.pampastarshooter.core.model.FrameSnapshot
+import com.antigravity.pampastarshooter.core.model.GameSettings
+import com.antigravity.pampastarshooter.core.model.InputSnapshot
+import com.antigravity.pampastarshooter.core.model.MissionSnapshot
+import com.antigravity.pampastarshooter.core.model.OverlaySnapshot
+import com.antigravity.pampastarshooter.core.model.PlayerProfile
+import com.antigravity.pampastarshooter.core.model.PlayerSnapshot
+import com.antigravity.pampastarshooter.core.model.RunConfig
+import com.antigravity.pampastarshooter.core.model.RunMode
+import com.antigravity.pampastarshooter.core.model.RunPhase
+import com.antigravity.pampastarshooter.core.model.RunResult
+import com.antigravity.pampastarshooter.core.model.Vector2
+import com.antigravity.pampastarshooter.core.model.WarningSnapshot
+import com.antigravity.pampastarshooter.core.model.displayLabel
+import com.antigravity.pampastarshooter.core.model.findCampaignNode
 import com.antigravity.pampastarshooter.game.android.GameSurfaceView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -48,12 +91,13 @@ fun GameScreen(
     container: AppContainer,
     profile: PlayerProfile,
     settings: GameSettings,
-    selectedModifiers: List<String>,
+    runSetup: PendingRunSetup,
     onExit: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val ui = chrome()
+    val content = remember { container.contentRepository.load() }
     var frame by remember { mutableStateOf(FrameSnapshot()) }
     var result by remember { mutableStateOf<RunResult?>(null) }
     var surfaceView by remember { mutableStateOf<GameSurfaceView?>(null) }
@@ -72,13 +116,17 @@ fun GameScreen(
         onDispose { surfaceView?.releaseSession() }
     }
 
-    LaunchedEffect(surfaceView, runSeed, profile.selectedShipId, settings.hudLayout, selectedModifiers) {
+    LaunchedEffect(surfaceView, runSeed, profile.selectedShipId, runSetup) {
         surfaceView?.startRun(
             engine = PampaGameEngine(container.contentRepository),
             config = RunConfig(
                 shipId = profile.selectedShipId,
                 seed = runSeed,
-                modifiers = selectedModifiers,
+                mode = runSetup.mode,
+                campaignNodeId = runSetup.campaignNodeId,
+                forcedBiomeId = runSetup.forcedBiomeId,
+                objective = runSetup.objective,
+                modifiers = runSetup.modifiers,
                 hudLayout = settings.hudLayout,
             ),
             profile = profile,
@@ -94,21 +142,24 @@ fun GameScreen(
         var sentPause = 0
         var sentResume = 0
         var sentReroll = 0
+        var lastInput = InputSnapshot()
         while (isActive) {
             val currentSelection = selectedUpgrade
-            surfaceView?.updateInput(
-                InputSnapshot(
-                    movement = movement,
-                    dashPressed = dashTick != sentDash,
-                    pulsePressed = pulseTick != sentPulse,
-                    shieldPressed = shieldTick != sentShield,
-                    minePressed = mineTick != sentMine,
-                    pausePressed = pauseTick != sentPause,
-                    resumePressed = resumeTick != sentResume,
-                    rerollPressed = rerollTick != sentReroll,
-                    selectedUpgradeIndex = currentSelection,
-                ),
+            val nextInput = InputSnapshot(
+                movement = movement,
+                dashPressed = dashTick != sentDash,
+                pulsePressed = pulseTick != sentPulse,
+                shieldPressed = shieldTick != sentShield,
+                minePressed = mineTick != sentMine,
+                pausePressed = pauseTick != sentPause,
+                resumePressed = resumeTick != sentResume,
+                rerollPressed = rerollTick != sentReroll,
+                selectedUpgradeIndex = currentSelection,
             )
+            if (nextInput != lastInput) {
+                surfaceView?.updateInput(nextInput)
+                lastInput = nextInput
+            }
             sentDash = dashTick
             sentPulse = pulseTick
             sentShield = shieldTick
@@ -116,8 +167,16 @@ fun GameScreen(
             sentPause = pauseTick
             sentResume = resumeTick
             sentReroll = rerollTick
-            if (currentSelection != null) selectedUpgrade = null
-            delay(16)
+            if (currentSelection != null) {
+                selectedUpgrade = null
+            }
+            delay(
+                when (frame.phase) {
+                    RunPhase.ChoosingUpgrade -> 8L
+                    RunPhase.Running -> 16L
+                    else -> 33L
+                },
+            )
         }
     }
 
@@ -197,8 +256,24 @@ fun GameScreen(
         if (frame.phase == RunPhase.ChoosingUpgrade && frame.overlay is OverlaySnapshot.LevelUp) {
             LevelUpOverlay(
                 overlay = frame.overlay as OverlaySnapshot.LevelUp,
-                onPick = { selectedUpgrade = it },
-                onReroll = { rerollTick++ },
+                onPick = { choiceIndex ->
+                    selectedUpgrade = choiceIndex
+                    surfaceView?.updateInput(
+                        InputSnapshot(
+                            movement = movement,
+                            selectedUpgradeIndex = choiceIndex,
+                        ),
+                    )
+                },
+                onReroll = {
+                    rerollTick++
+                    surfaceView?.updateInput(
+                        InputSnapshot(
+                            movement = movement,
+                            rerollPressed = true,
+                        ),
+                    )
+                },
             )
         }
 
@@ -211,6 +286,7 @@ fun GameScreen(
 
         if (result != null) {
             GameOverOverlay(
+                content = content,
                 result = result!!,
                 onReplay = {
                     runSeed = java.lang.System.currentTimeMillis()
@@ -256,7 +332,7 @@ private fun TopHud(
                             fontSize = 20.sp,
                         )
                         Text(
-                            text = "Wave ${frame.hud.wave} · ${frame.hud.biomeLabel}",
+                            text = "${frame.hud.modeLabel} | Wave ${frame.hud.wave} | ${frame.hud.biomeLabel}",
                             color = ui.mutedArgb.asColor(),
                             fontSize = 13.sp,
                         )
@@ -271,6 +347,13 @@ private fun TopHud(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     HudChip("Score ${frame.hud.score}")
                     HudChip("+${frame.hud.archiveXpProjected} XP", accent = ui.amberArgb.asColor())
+                }
+                frame.hud.objective?.let { objective ->
+                    HudChip(objective.label, accent = ui.cyanArgb.asColor())
+                    HudChip(
+                        objective.progressLabel,
+                        accent = if (objective.completed) ui.mintArgb.asColor() else ui.amberArgb.asColor(),
+                    )
                 }
                 frame.hud.activeEventLabel?.let {
                     HudChip(it, accent = ui.lavenderArgb.asColor())
@@ -349,7 +432,12 @@ private fun BottomControlDock(
                 if (joystickFirst) {
                     JoystickControl(joystickModifier, onMove)
                 }
-                StatusCluster(frame = frame, modifier = Modifier.weight(1f).padding(horizontal = 18.dp))
+                StatusCluster(
+                    frame = frame,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 18.dp),
+                )
                 ActionCluster(
                     player = player,
                     modifier = Modifier.offset(y = actionYOffset),
@@ -420,7 +508,7 @@ private fun StatusCluster(
                     fontSize = 15.sp,
                 )
                 Text(
-                    text = "Kills ${frame.hud.kills} · Credits ${frame.hud.credits}",
+                    text = "Kills ${frame.hud.kills} | Credits ${frame.hud.credits}",
                     color = ui.mutedArgb.asColor(),
                     fontSize = 12.sp,
                 )
@@ -530,17 +618,56 @@ private fun ActionCluster(
     onShield: () -> Unit,
     onMine: () -> Unit,
 ) {
+    val activePlayer = player
     Column(
         modifier = modifier.width(190.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            AbilityButton("Dash", Icons.Rounded.Bolt, cooldownLabel(player?.dashCooldown), Modifier.weight(1f), onDash)
-            AbilityButton("Pulse", Icons.Rounded.FlashOn, cooldownLabel(player?.pulseCooldown), Modifier.weight(1f), onPulse, accent = Color(0xFFA8B4FF))
+            AbilityButton(
+                label = "Dash",
+                icon = Icons.Rounded.Bolt,
+                status = cooldownLabel(player?.dashCooldown),
+                modifier = Modifier.weight(1f),
+                onClick = onDash,
+                accent = Color(0xFF5CE7FF),
+            )
+            AbilityButton(
+                label = "Pulse",
+                icon = Icons.Rounded.FlashOn,
+                status = cooldownLabel(player?.pulseCooldown),
+                modifier = Modifier.weight(1f),
+                onClick = onPulse,
+                accent = Color(0xFFA8B4FF),
+            )
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            AbilityButton("Shield", Icons.Rounded.Security, cooldownLabel(player?.shieldCooldown), Modifier.weight(1f), onShield, accent = Color(0xFF8DFFBF))
-            AbilityButton("Mine", Icons.Rounded.TripOrigin, cooldownLabel(player?.mineCooldown), Modifier.weight(1f), onMine, accent = Color(0xFFFFC970))
+        if (activePlayer != null && (activePlayer.hasShield || activePlayer.hasMine)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (activePlayer.hasShield) {
+                    AbilityButton(
+                        label = "Shield",
+                        icon = Icons.Rounded.Security,
+                        status = cooldownLabel(activePlayer.shieldCooldown),
+                        modifier = Modifier.weight(1f),
+                        onClick = onShield,
+                        accent = Color(0xFF8DFFBF),
+                    )
+                } else {
+                    Spacer(modifier = Modifier.weight(1f))
+                }
+                if (activePlayer.hasMine) {
+                    AbilityButton(
+                        label = "Mine",
+                        icon = Icons.Rounded.TripOrigin,
+                        status = cooldownLabel(activePlayer.mineCooldown),
+                        modifier = Modifier.weight(1f),
+                        onClick = onMine,
+                        accent = Color(0xFFFFC970),
+                    )
+                } else {
+                    Spacer(modifier = Modifier.weight(1f))
+                }
+            }
         }
     }
 }
@@ -588,11 +715,19 @@ private fun AbilityButton(
 
 private fun cooldownLabel(value: Float?): String {
     if (value == null) return "--"
-    return if (value <= 0.05f) "READY" else String.format("%.1fs", value)
+    if (value <= 0.05f) return "READY"
+    val deciseconds = (value * 10f).toInt().coerceAtLeast(0)
+    return "${deciseconds / 10}.${deciseconds % 10}s"
 }
 
 private fun formatUnlockedShipLabel(id: String): String =
-    id.removePrefix("ship_").replaceFirstChar { it.uppercase() }
+    id.removePrefix("ship_").replace("_", " ").replaceFirstChar { it.uppercase() }
+
+private fun formatPerkLabel(id: String): String =
+    id.replace('_', ' ').replaceFirstChar { it.uppercase() }
+
+private fun formatModifierLabel(id: String): String =
+    id.replace('_', ' ').replaceFirstChar { it.uppercase() }
 
 @Composable
 private fun SmallActionPill(
@@ -675,7 +810,7 @@ private fun LevelUpOverlay(
         ) {
             Panel(
                 title = "Module Draft",
-                subtitle = "Level ${overlay.level} · scegli una carta per continuare",
+                subtitle = "Level ${overlay.level} | scegli una carta per continuare",
             ) {
                 overlay.choices.forEachIndexed { index, choice ->
                     FilledTonalButton(
@@ -694,7 +829,7 @@ private fun LevelUpOverlay(
                             Text(choice.label, fontWeight = FontWeight.Black)
                             Text(choice.description, fontSize = 12.sp, color = Color(0xFFB4C9D8))
                             Text(
-                                "${choice.category} · ${choice.currentStacks}/${choice.maxStacks}",
+                                "${choice.category} | ${choice.currentStacks}/${choice.maxStacks}",
                                 fontSize = 11.sp,
                                 color = Color(0xFF6FE3FF),
                             )
@@ -741,11 +876,19 @@ private fun PauseOverlay(
 
 @Composable
 private fun GameOverOverlay(
+    content: GameContentBundle,
     result: RunResult,
     onReplay: () -> Unit,
     onExit: () -> Unit,
 ) {
     val ui = chrome()
+    val campaignNode = result.campaignNodeId?.let(content::findCampaignNode)
+    val campaignRewards = buildList {
+        addAll(campaignNode?.rewardModifierIds.orEmpty().map(::formatModifierLabel))
+        if (campaignNode?.unlockEndless == true) {
+            add("Endless Frontier")
+        }
+    }
     Surface(modifier = Modifier.fillMaxSize(), color = Color(0xB205080E)) {
         Column(
             modifier = Modifier
@@ -754,8 +897,16 @@ private fun GameOverOverlay(
             verticalArrangement = Arrangement.Center,
         ) {
             Panel(
-                title = "Run Archiviata",
-                subtitle = "Wave ${result.waveReached} · ${result.kills} kill · ${result.bossesDefeated} boss",
+                title = when {
+                    result.success && result.config.mode == RunMode.Campaign -> "Sector Cleared"
+                    result.config.mode == RunMode.Campaign -> "Sector Failed"
+                    else -> "Run Archiviata"
+                },
+                subtitle = when {
+                    result.config.mode == RunMode.Campaign ->
+                        "${campaignNode?.label ?: "Campaign"} | Wave ${result.waveReached} | ${result.kills} kill"
+                    else -> "Wave ${result.waveReached} | ${result.kills} kill | ${result.bossesDefeated} boss"
+                },
             ) {
                 Text(
                     text = "Score ${result.score}",
@@ -765,21 +916,44 @@ private fun GameOverOverlay(
                     fontSize = 24.sp,
                 )
                 Text(
-                    text = "+${result.creditsEarned} crediti · +${result.archiveXpEarned} XP",
+                    text = "+${result.creditsEarned} crediti | +${result.archiveXpEarned} XP",
                     color = ui.amberArgb.asColor(),
                     fontWeight = FontWeight.Bold,
                 )
+                result.config.objective?.let {
+                    Text(
+                        text = it.displayLabel(),
+                        color = ui.mutedArgb.asColor(),
+                        fontSize = 12.sp,
+                    )
+                }
                 if (result.config.modifiers.isNotEmpty()) {
                     Text(
-                        text = "Mutators: ${result.config.modifiers.joinToString()}",
+                        text = "Mutators: ${result.config.modifiers.joinToString(transform = ::formatModifierLabel)}",
                         color = ui.mutedArgb.asColor(),
                         fontSize = 12.sp,
                     )
                 }
                 if (result.unlockedShipIds.isNotEmpty()) {
                     Text(
-                        text = "Unlocked: ${result.unlockedShipIds.joinToString(transform = ::formatUnlockedShipLabel)}",
+                        text = "Unlocked ships: ${result.unlockedShipIds.joinToString(transform = ::formatUnlockedShipLabel)}",
                         color = ui.mintArgb.asColor(),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                    )
+                }
+                if (result.unlockedPerkIds.isNotEmpty()) {
+                    Text(
+                        text = "Unlocked perks: ${result.unlockedPerkIds.joinToString(transform = ::formatPerkLabel)}",
+                        color = ui.lavenderArgb.asColor(),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                    )
+                }
+                if (campaignRewards.isNotEmpty()) {
+                    Text(
+                        text = "Campaign rewards: ${campaignRewards.joinToString()}",
+                        color = ui.amberArgb.asColor(),
                         fontWeight = FontWeight.Bold,
                         fontSize = 12.sp,
                     )

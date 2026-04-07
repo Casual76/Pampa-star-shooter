@@ -2,6 +2,7 @@ package com.antigravity.pampastarshooter.data.local.entity
 
 import androidx.room.Entity
 import androidx.room.PrimaryKey
+import com.antigravity.pampastarshooter.core.model.CampaignState
 import com.antigravity.pampastarshooter.core.model.MissionState
 import com.antigravity.pampastarshooter.core.model.PlayerProfile
 import com.antigravity.pampastarshooter.core.model.UnlockTree
@@ -22,6 +23,9 @@ data class ProfileEntity(
     val selectedShipId: String,
     val tutorialSeen: Boolean,
     val unlockTree: UnlockTree,
+    val campaignState: CampaignState,
+    val unlockedPerkIds: Set<String>,
+    val equippedPerkIds: List<String>,
     val activeMissions: List<MissionState>,
 )
 
@@ -39,6 +43,9 @@ fun ProfileEntity.toDomain(): PlayerProfile = PlayerProfile(
     selectedShipId = selectedShipId,
     tutorialSeen = tutorialSeen,
     unlockTree = unlockTree,
+    campaignState = campaignState,
+    unlockedPerkIds = unlockedPerkIds,
+    equippedPerkIds = equippedPerkIds,
     activeMissions = activeMissions,
 )
 
@@ -56,6 +63,8 @@ fun PlayerProfile.toEntity(): ProfileEntity = ProfileEntity(
     selectedShipId = selectedShipId,
     tutorialSeen = tutorialSeen,
     unlockTree = unlockTree,
+    campaignState = campaignState,
+    unlockedPerkIds = unlockedPerkIds,
+    equippedPerkIds = equippedPerkIds,
     activeMissions = activeMissions,
 )
-

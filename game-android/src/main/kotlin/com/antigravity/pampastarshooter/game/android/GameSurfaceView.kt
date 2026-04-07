@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.os.Handler
 import android.os.Looper
+import android.os.Process
 import android.util.AttributeSet
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -23,6 +24,7 @@ class GameSurfaceView @JvmOverloads constructor(
 ) : SurfaceView(context, attrs), SurfaceHolder.Callback {
     private val renderer = AndroidGameRenderer(context)
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val snapshotDispatchLock = Any()
 
     @Volatile
     private var running = false
@@ -38,6 +40,8 @@ class GameSurfaceView @JvmOverloads constructor(
     private var hapticsController: HapticsController? = null
     private var loopThread: Thread? = null
     private var lastPhase: RunPhase = RunPhase.Idle
+    private var pendingSnapshot: FrameSnapshot? = null
+    private var snapshotDispatchQueued = false
 
     var onSnapshot: ((FrameSnapshot) -> Unit)? = null
     var onRunFinished: ((RunResult) -> Unit)? = null
@@ -109,6 +113,7 @@ class GameSurfaceView @JvmOverloads constructor(
         running = true
         loopThread = Thread(
             {
+                Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY)
                 var lastFrameNanos = System.nanoTime()
                 var publishCountdown = 0
                 var lastPublishedSnapshot: FrameSnapshot? = null
@@ -132,13 +137,16 @@ class GameSurfaceView @JvmOverloads constructor(
                     }
                     if (shouldPublish) {
                         lastPublishedSnapshot = snapshot
-                        mainHandler.post { onSnapshot?.invoke(snapshot) }
+                        dispatchSnapshot(snapshot)
                     }
                     activeEngine.consumeLatestResult()?.let { result ->
                         mainHandler.post { onRunFinished?.invoke(result) }
                     }
                     val frameMillis = ((System.nanoTime() - now) / 1_000_000L).coerceAtLeast(0L)
-                    val targetFrameMillis = if (snapshot.phase == RunPhase.Running) 16L else 33L
+                    val targetFrameMillis = when (snapshot.phase) {
+                        RunPhase.Running, RunPhase.ChoosingUpgrade -> 16L
+                        else -> 33L
+                    }
                     val sleepMillis = (targetFrameMillis - frameMillis).coerceAtLeast(1L)
                     try {
                         Thread.sleep(sleepMillis)
@@ -156,6 +164,10 @@ class GameSurfaceView @JvmOverloads constructor(
         loopThread?.interrupt()
         loopThread?.join(500)
         loopThread = null
+        synchronized(snapshotDispatchLock) {
+            pendingSnapshot = null
+            snapshotDispatchQueued = false
+        }
     }
 
     private fun drawSnapshot(snapshot: FrameSnapshot) {
@@ -181,5 +193,33 @@ class GameSurfaceView @JvmOverloads constructor(
             else -> Unit
         }
         lastPhase = snapshot.phase
+    }
+
+    private fun dispatchSnapshot(snapshot: FrameSnapshot) {
+        val shouldPost = synchronized(snapshotDispatchLock) {
+            pendingSnapshot = snapshot
+            if (snapshotDispatchQueued) {
+                false
+            } else {
+                snapshotDispatchQueued = true
+                true
+            }
+        }
+        if (!shouldPost) return
+        mainHandler.post {
+            while (true) {
+                val nextSnapshot = synchronized(snapshotDispatchLock) {
+                    val latest = pendingSnapshot
+                    if (latest == null) {
+                        snapshotDispatchQueued = false
+                        null
+                    } else {
+                        pendingSnapshot = null
+                        latest
+                    }
+                } ?: break
+                onSnapshot?.invoke(nextSnapshot)
+            }
+        }
     }
 }

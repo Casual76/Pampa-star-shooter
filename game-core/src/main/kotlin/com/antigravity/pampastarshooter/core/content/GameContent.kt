@@ -207,6 +207,46 @@ data class PermanentModuleDef(
     val costPerLevel: Int,
     val costCurve: Int,
     val maxLevel: Int,
+    val unlockArchiveRank: Int = 1,
+)
+
+@Serializable
+enum class CampaignNodeKind {
+    Recon,
+    Sweep,
+    Salvage,
+    Boss,
+}
+
+@Serializable
+data class PerkDef(
+    val id: String,
+    val label: String,
+    val description: String,
+    val flavor: String,
+    val accentColor: Long,
+)
+
+@Serializable
+data class CampaignNodeDef(
+    val id: String,
+    val label: String,
+    val description: String,
+    val kind: CampaignNodeKind,
+    val objective: RunObjective,
+    val rewardShipIds: List<String> = emptyList(),
+    val rewardPerkIds: List<String> = emptyList(),
+    val rewardModifierIds: List<String> = emptyList(),
+    val unlockEndless: Boolean = false,
+)
+
+@Serializable
+data class CampaignSectorDef(
+    val id: String,
+    val label: String,
+    val subtitle: String,
+    val biomeId: String,
+    val nodes: List<CampaignNodeDef>,
 )
 
 @Serializable
@@ -221,6 +261,8 @@ data class GameContentBundle(
     val runMissionPool: List<MissionDef>,
     val metaMissionPool: List<MissionDef>,
     val permanentModules: List<PermanentModuleDef>,
+    val perks: List<PerkDef>,
+    val campaignSectors: List<CampaignSectorDef>,
     val affixes: List<AffixDef>,
     val runModifiers: List<RunModifier>,
     val worldEvents: List<WorldEventDef>,
@@ -411,18 +453,90 @@ object DefaultGameContent {
             MissionDef("meta_credits_350", "Archivista", "Raccogli 350 crediti totali.", 350, 140, 54, MissionMetric.Credits),
         ),
         permanentModules = listOf(
-            PermanentModuleDef("hull", "Reinforced Hull", "+10 HP iniziali per livello.", LabCategory.Survival, 42, 24, 8, 6),
-            PermanentModuleDef("bulwark", "Bulwark Mesh", "Scudi piu robusti e mine con impatto migliore.", LabCategory.Survival, 50, 26, 8, 6),
-            PermanentModuleDef("reserve", "Reserve Cell", "Migliora forza e uptime dello scudo.", LabCategory.Survival, 54, 28, 10, 5),
-            PermanentModuleDef("reactor", "Reactor Feed", "Piu danno base e cadenza di fuoco.", LabCategory.Weapons, 48, 28, 9, 6),
-            PermanentModuleDef("targeting", "Targeting Lattice", "Lock-on piu ampio e colpi piu veloci.", LabCategory.Weapons, 46, 26, 8, 6),
-            PermanentModuleDef("capacitor", "Pulse Capacitor", "Pulse piu pesanti e frequenti.", LabCategory.Weapons, 58, 30, 10, 5),
-            PermanentModuleDef("ordnance", "Ordnance Rack", "Mine piu ampie, forti e reattive.", LabCategory.Weapons, 56, 30, 10, 5),
-            PermanentModuleDef("thrusters", "Vector Thrusters", "Migliora movimento e portata del dash.", LabCategory.Control, 44, 24, 8, 6),
-            PermanentModuleDef("magnet", "Magnet Array", "Pickup attratti prima e trascinati piu in fretta.", LabCategory.Control, 40, 22, 8, 6),
-            PermanentModuleDef("cache", "Archive Cache", "Moltiplicatore score migliore per run pulite.", LabCategory.Tactics, 52, 28, 8, 5),
-            PermanentModuleDef("overdrive", "Slipstream Core", "Overdrive piu lungo e con bonus superiore.", LabCategory.Tactics, 60, 32, 10, 5),
-            PermanentModuleDef("reroll", "Tactical Buffer", "Aggiunge reroll durante il draft moduli.", LabCategory.Tactics, 68, 34, 12, 3),
+            PermanentModuleDef("hull", "Reinforced Hull", "+10 HP iniziali per livello.", LabCategory.Survival, 42, 24, 8, 6, unlockArchiveRank = 1),
+            PermanentModuleDef("bulwark", "Bulwark Mesh", "Scudi piu robusti e mine con impatto migliore.", LabCategory.Survival, 50, 26, 8, 6, unlockArchiveRank = 2),
+            PermanentModuleDef("reserve", "Reserve Cell", "Migliora forza e uptime dello scudo.", LabCategory.Survival, 54, 28, 10, 5, unlockArchiveRank = 3),
+            PermanentModuleDef("reactor", "Reactor Feed", "Piu danno base e cadenza di fuoco.", LabCategory.Weapons, 48, 28, 9, 6, unlockArchiveRank = 1),
+            PermanentModuleDef("targeting", "Targeting Lattice", "Lock-on piu ampio e colpi piu veloci.", LabCategory.Weapons, 46, 26, 8, 6, unlockArchiveRank = 2),
+            PermanentModuleDef("capacitor", "Pulse Capacitor", "Pulse piu pesanti e frequenti.", LabCategory.Weapons, 58, 30, 10, 5, unlockArchiveRank = 3),
+            PermanentModuleDef("ordnance", "Ordnance Rack", "Mine piu ampie, forti e reattive.", LabCategory.Weapons, 56, 30, 10, 5, unlockArchiveRank = 4),
+            PermanentModuleDef("thrusters", "Vector Thrusters", "Migliora movimento e portata del dash.", LabCategory.Control, 44, 24, 8, 6, unlockArchiveRank = 1),
+            PermanentModuleDef("magnet", "Magnet Array", "Pickup attratti prima e trascinati piu in fretta.", LabCategory.Control, 40, 22, 8, 6, unlockArchiveRank = 1),
+            PermanentModuleDef("cache", "Archive Cache", "Moltiplicatore score migliore per run pulite.", LabCategory.Tactics, 52, 28, 8, 5, unlockArchiveRank = 2),
+            PermanentModuleDef("overdrive", "Slipstream Core", "Overdrive piu lungo e con bonus superiore.", LabCategory.Tactics, 60, 32, 10, 5, unlockArchiveRank = 3),
+            PermanentModuleDef("reroll", "Tactical Buffer", "Aggiunge reroll durante il draft moduli.", LabCategory.Tactics, 68, 34, 12, 3, unlockArchiveRank = 4),
+        ),
+        perks = listOf(
+            PerkDef("emergency_shield", "Emergency Shield", "Shield sbloccato e +20 forza scudo iniziale.", "Buffer difensivo permanente per ingressi sporchi.", 0xFF8DFFBF),
+            PerkDef("dash_coil", "Dash Coil", "-10% cooldown dash e +6% velocita di movimento.", "Thrusters piu reattivi e traiettorie piu pulite.", 0xFF63E7FF),
+            PerkDef("pulse_primer", "Pulse Primer", "+20 raggio pulse e +10% danni pulse.", "Il core del pulse esce piu largo e piu denso.", 0xFFAAB5FF),
+            PerkDef("magnet_surge", "Magnet Surge", "+30 magnet radius e +10% pickup speed.", "Il campo di raccolta aggancia prima e tira piu deciso.", 0xFF63E7FF),
+            PerkDef("regen_matrix", "Regen Matrix", "+12 HP massimi e +0.6 HP/s.", "Un reticolo di recupero per run lunghe e sporche.", 0xFF88FFC8),
+            PerkDef("draft_cache", "Draft Cache", "+1 reroll e +10% score multiplier.", "Archivio tattico dedicato alle run ad alta precisione.", 0xFFFFBF66),
+        ),
+        campaignSectors = listOf(
+            CampaignSectorDef(
+                id = "sector_neon",
+                label = "Neon Docks",
+                subtitle = "Primo corridoio operativo, visibilita alta e traffico leggero.",
+                biomeId = "neon_docks",
+                nodes = listOf(
+                    CampaignNodeDef("sector1_recon", "Recon", "Riconquista le prime corsie e stabilizza il settore.", CampaignNodeKind.Recon, RunObjective.ReachWave(4)),
+                    CampaignNodeDef("sector1_sweep", "Sweep", "Ripulisci le unit com piu aggressive del molo.", CampaignNodeKind.Sweep, RunObjective.KillCount(55)),
+                    CampaignNodeDef("sector1_salvage", "Salvage", "Recupera abbastanza crediti per finanziare il salto successivo.", CampaignNodeKind.Salvage, RunObjective.EarnCredits(32)),
+                    CampaignNodeDef(
+                        id = "sector1_boss",
+                        label = "Boss",
+                        description = "Neutralizza il segnale dominante del distretto.",
+                        kind = CampaignNodeKind.Boss,
+                        objective = RunObjective.DefeatBoss(),
+                        rewardShipIds = listOf(ShipWarden),
+                        rewardPerkIds = listOf("emergency_shield", "dash_coil"),
+                    ),
+                ),
+            ),
+            CampaignSectorDef(
+                id = "sector_obsidian",
+                label = "Obsidian Relay",
+                subtitle = "Reti indurite, piu cecchini e finestre d'ingaggio piu strette.",
+                biomeId = "obsidian_relay",
+                nodes = listOf(
+                    CampaignNodeDef("sector2_recon", "Recon", "Riapri i nodi oscurati del relay.", CampaignNodeKind.Recon, RunObjective.ReachWave(6)),
+                    CampaignNodeDef("sector2_sweep", "Sweep", "Spezza la pressione dei tiratori di linea.", CampaignNodeKind.Sweep, RunObjective.KillCount(85)),
+                    CampaignNodeDef("sector2_salvage", "Salvage", "Accumula risorse per il salto finale.", CampaignNodeKind.Salvage, RunObjective.EarnCredits(48)),
+                    CampaignNodeDef(
+                        id = "sector2_boss",
+                        label = "Boss",
+                        description = "Abbatti il lich di segnale e apri il settore avanzato.",
+                        kind = CampaignNodeKind.Boss,
+                        objective = RunObjective.DefeatBoss(),
+                        rewardShipIds = listOf(ShipSpecter),
+                        rewardPerkIds = listOf("pulse_primer", "magnet_surge"),
+                        rewardModifierIds = listOf("dense_swarm"),
+                    ),
+                ),
+            ),
+            CampaignSectorDef(
+                id = "sector_amber",
+                label = "Amber Rift",
+                subtitle = "Fratture incandescenti e pressione da endgame.",
+                biomeId = "amber_rift",
+                nodes = listOf(
+                    CampaignNodeDef("sector3_recon", "Recon", "Sonda il fronte caldo senza perdere ritmo.", CampaignNodeKind.Recon, RunObjective.ReachWave(8)),
+                    CampaignNodeDef("sector3_sweep", "Sweep", "Sfoltisci la camera a piu alta densita del teatro.", CampaignNodeKind.Sweep, RunObjective.KillCount(120)),
+                    CampaignNodeDef("sector3_salvage", "Salvage", "Recupera il payload necessario a chiudere il varco.", CampaignNodeKind.Salvage, RunObjective.EarnCredits(70)),
+                    CampaignNodeDef(
+                        id = "sector3_boss",
+                        label = "Boss",
+                        description = "Elimina il guardiano finale e apri la frontiera endless.",
+                        kind = CampaignNodeKind.Boss,
+                        objective = RunObjective.DefeatBoss(),
+                        rewardPerkIds = listOf("regen_matrix", "draft_cache"),
+                        rewardModifierIds = listOf("glass_drive", "long_burn"),
+                        unlockEndless = true,
+                    ),
+                ),
+            ),
         ),
         affixes = listOf(
             AffixDef("swift", "Swift", 1.15f, 1.28f, 1.08f, 0xFF66E8FF),
@@ -445,13 +559,10 @@ object DefaultGameContent {
     fun starterProfile(): PlayerProfile = PlayerProfile(
         unlockTree = UnlockTree(
             unlockedShipIds = setOf(ShipStriker),
-            permanentModules = mapOf(
-                "hull" to 0,
-                "reactor" to 0,
-                "bulwark" to 0,
-                "cache" to 0,
-                "reroll" to 0,
-            ),
+            permanentModules = create()
+                .permanentModules
+                .filter { it.unlockArchiveRank <= 1 }
+                .associate { it.id to 0 },
             nextMetaMissionIndex = 3,
         ),
         activeMissions = create().metaMissionPool.take(3).map(::MissionState),

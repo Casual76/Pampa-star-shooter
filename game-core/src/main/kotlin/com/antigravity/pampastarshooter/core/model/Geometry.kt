@@ -1,15 +1,17 @@
 package com.antigravity.pampastarshooter.core.model
 
-import kotlin.math.hypot
+import kotlin.math.sqrt
 
 data class Vector2(
     val x: Float = 0f,
     val y: Float = 0f,
 ) {
-    fun length(): Float = hypot(x.toDouble(), y.toDouble()).toFloat()
+    fun lengthSquared(): Float = x * x + y * y
 
-    fun normalized(): Vector2 {
-        val len = length()
+    fun length(): Float = sqrt(lengthSquared())
+
+    fun normalized(length: Float = length()): Vector2 {
+        val len = length
         return if (len <= 0.0001f) Zero else Vector2(x / len, y / len)
     }
 
@@ -25,6 +27,12 @@ data class Vector2(
     operator fun times(scale: Float): Vector2 = Vector2(x * scale, y * scale)
 
     fun distanceTo(other: Vector2): Float = (this - other).length()
+
+    fun distanceSquaredTo(other: Vector2): Float {
+        val dx = x - other.x
+        val dy = y - other.y
+        return dx * dx + dy * dy
+    }
 
     companion object {
         val Zero = Vector2()
@@ -46,4 +54,3 @@ data class RectBounds(
         y = point.y.coerceIn(top + padding, bottom - padding),
     )
 }
-

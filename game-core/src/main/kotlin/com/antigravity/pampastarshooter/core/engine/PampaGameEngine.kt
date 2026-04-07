@@ -9,6 +9,7 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlin.math.sqrt
 import kotlin.random.Random
 
 internal interface Resettable {
@@ -208,20 +209,31 @@ internal class GameWorld(
     val discoveredEnemyIds = mutableSetOf<String>()
     val discoveredBiomeIds = mutableSetOf<String>()
     val queuedEnemySpawns = mutableListOf<String>()
-    val selectedModifiers = content.runModifiers.filter { it.id in config.modifiers }
+    val campaignNode = config.campaignNodeId?.let(content::findCampaignNode)
+    val glassDriveActive = "glass_drive" in config.modifiers
+    val selectedModifiers = if (config.mode == RunMode.Endless) {
+        content.runModifiers.filter { it.id in config.modifiers }
+    } else {
+        emptyList()
+    }
 
     var phase: RunPhase = RunPhase.Running
     var startedAtEpochMs: Long = java.lang.System.currentTimeMillis()
     var elapsedSeconds: Float = 0f
     var wave: Int = 1
     var waveElapsed: Float = 0f
-    var spawnTimer: Float = 0.4f
-    var activeBiomeIndex: Int = 0
-    var activeBiome: BiomeDef = content.biomes.first()
+    var spawnTimer: Float = 0.55f
+    var activeBiome: BiomeDef = config.forcedBiomeId?.let { biomeId ->
+        content.biomes.firstOrNull { it.id == biomeId }
+    } ?: content.biomes.first()
+    var activeBiomeIndex: Int = content.biomes.indexOfFirst { it.id == activeBiome.id }.coerceAtLeast(0)
     var activeEvent: WorldEventDef? = null
     var activeEventRemaining: Float = 0f
     var warningTitle: String? = "Boot Sequence"
-    var warningSubtitle: String? = "Sistema pronto. Naviga il settore con movimenti precisi."
+    var warningSubtitle: String? = when (config.mode) {
+        RunMode.Campaign -> config.objective?.displayLabel() ?: "Sistema pronto. Naviga il settore con movimenti precisi."
+        RunMode.Endless -> "Sistema pronto. Naviga il settore con movimenti precisi."
+    }
     var warningTime: Float = 2.6f
     var bossSpawnedThisWave: Boolean = false
     var minibossSpawnedThisWave: Boolean = false
@@ -275,12 +287,13 @@ internal class GameWorld(
         player.mineRadiusBonus += ordnanceLevel * 6f
         player.minePowerBonus += ordnanceLevel * 10f
         player.mineCooldownMax = max(5.4f, player.mineCooldownMax * (1f - ordnanceLevel * 0.05f))
+        profile.equippedPerkIds.forEach(::applyPerk)
         rerollsRemaining = player.rerolls
 
         selectedModifiers.forEach { modifier ->
             player.scoreMultiplier *= modifier.scoreMultiplier
             when (modifier.id) {
-                "dense_swarm" -> spawnTimer *= 0.85f
+                "dense_swarm" -> spawnTimer *= 0.9f
                 "glass_drive" -> {
                     player.damage *= 1.18f
                     player.maxHp *= 0.9f
@@ -295,6 +308,80 @@ internal class GameWorld(
     fun nextId(): Long = nextRuntimeId++
 
     fun moduleLevel(id: String): Int = profile.unlockTree.permanentModules[id] ?: 0
+
+    fun applyPerk(id: String) {
+        when (id) {
+            "emergency_shield" -> {
+                player.hasShield = true
+                player.shieldStrength += 20f
+                player.shield = max(player.shield, player.shieldStrength)
+            }
+            "dash_coil" -> {
+                player.dashCooldownMax = max(1.5f, player.dashCooldownMax * 0.9f)
+                player.moveSpeed *= 1.06f
+            }
+            "pulse_primer" -> {
+                player.pulseRadius += 20f
+                player.pulseDamage *= 1.1f
+            }
+            "magnet_surge" -> {
+                player.magnetRadius += 30f
+                player.pickupSpeedMultiplier += 0.1f
+            }
+            "regen_matrix" -> {
+                player.maxHp += 12f
+                player.hp += 12f
+                player.regenPerSecond += 0.6f
+            }
+            "draft_cache" -> {
+                player.rerolls += 1
+                player.scoreMultiplier += 0.1f
+            }
+        }
+    }
+
+    fun objectiveProgress(): Int {
+        val objective = config.objective ?: return 0
+        return objective.progressValue(
+            wave = wave,
+            kills = kills,
+            credits = creditsEarned,
+            bosses = bossesDefeated,
+        )
+    }
+
+    fun objectiveSnapshot(): ObjectiveSnapshot? {
+        val objective = config.objective ?: return null
+        val progress = objectiveProgress()
+        return ObjectiveSnapshot(
+            label = objective.displayLabel(),
+            progress = progress.coerceAtMost(objective.target),
+            target = objective.target,
+            progressLabel = objective.progressLabel(progress),
+            completed = progress >= objective.target,
+        )
+    }
+
+    fun checkObjectiveCompletion() {
+        if (phase == RunPhase.GameOver || config.mode != RunMode.Campaign) return
+        val objective = config.objective ?: return
+        if (objectiveProgress() < objective.target) return
+        finishRun("Sector Cleared", success = true)
+    }
+
+    fun bankOutstandingCredits() {
+        var bankedCredits = 0
+        val iterator = pickups.iterator()
+        while (iterator.hasNext()) {
+            val pickup = iterator.next()
+            if (pickup.kind != "credit") continue
+            bankedCredits += pickup.value
+            iterator.remove()
+        }
+        if (bankedCredits == 0) return
+        creditsEarned += bankedCredits
+        updateRunMissionProgress()
+    }
 
     fun calculateScore(): Int {
         val raw = kills * 14 + wave * 96 + creditsEarned * 5 + bossesDefeated * 160
@@ -434,7 +521,7 @@ internal class GameWorld(
         val hpMultiplier = affix?.hpMultiplier ?: 1f
         val speedMultiplier = (affix?.speedMultiplier ?: 1f) * (activeEvent?.enemySpeedMultiplier ?: 1f)
         val waveHpMultiplier = 1f + wave * 0.13f + if (wave >= 6) 0.08f else 0f
-        val waveSpeedMultiplier = 1f + min(0.22f, (wave - 1).coerceAtLeast(0) * 0.018f)
+        val waveSpeedMultiplier = 1f + min(0.18f, (wave - 1).coerceAtLeast(0) * 0.014f)
         val state = EnemyState(
             runtimeId = nextId(),
             def = def,
@@ -471,12 +558,12 @@ internal class GameWorld(
 
     fun nearestEnemy(maxDistance: Float = player.autoTargetRange): EnemyState? {
         var best: EnemyState? = null
-        var bestDistance = maxDistance
+        var bestDistanceSquared = maxDistance * maxDistance
         enemies.forEach { enemy ->
-            val distance = player.position.distanceTo(enemy.position)
-            if (distance < bestDistance) {
+            val distanceSquared = player.position.distanceSquaredTo(enemy.position)
+            if (distanceSquared < bestDistanceSquared) {
                 best = enemy
-                bestDistance = distance
+                bestDistanceSquared = distanceSquared
             }
         }
         return best
@@ -532,6 +619,7 @@ internal class GameWorld(
         score = calculateScore()
         projectedArchiveXp = calculateProjectedArchiveXp()
         updateRunMissionProgress()
+        checkObjectiveCompletion()
         spawnParticles(enemy.position, enemy.color, count = if (enemy.def.isBoss) 24 else 10, speed = 190f)
         spawnVisualEffect(
             kind = VisualEffectKind.Death,
@@ -688,20 +776,31 @@ internal class GameWorld(
         }
     }
 
-    fun finishRun(title: String) {
+    fun finishRun(title: String, success: Boolean = false) {
         if (phase == RunPhase.GameOver) return
         phase = RunPhase.GameOver
+        if (success) {
+            bankOutstandingCredits()
+        }
         score = calculateScore()
         projectedArchiveXp = calculateProjectedArchiveXp()
 
-        val unlockedShips = buildSet {
-            if (wave >= 4) add(DefaultGameContent.ShipWarden)
-            if (wave >= 8 || bossesDefeated >= 3) add(DefaultGameContent.ShipSpecter)
-        } - profile.unlockTree.unlockedShipIds
+        val unlockedShips = if (success) {
+            (campaignNode?.rewardShipIds?.toSet() ?: emptySet()) - profile.unlockTree.unlockedShipIds
+        } else {
+            emptySet()
+        }
+        val unlockedPerks = if (success) {
+            (campaignNode?.rewardPerkIds?.toSet() ?: emptySet()) - profile.unlockedPerkIds
+        } else {
+            emptySet()
+        }
 
         finalResult = RunResult(
             config = config,
             shipId = shipDef.id,
+            success = success,
+            campaignNodeId = config.campaignNodeId,
             durationSeconds = elapsedSeconds.roundToInt(),
             waveReached = wave,
             biomeId = activeBiome.id,
@@ -713,6 +812,7 @@ internal class GameWorld(
             discoveredEnemyIds = discoveredEnemyIds.toSet(),
             discoveredBiomeIds = discoveredBiomeIds.toSet(),
             unlockedShipIds = unlockedShips,
+            unlockedPerkIds = unlockedPerks,
             historyEntry = RunHistoryEntry(
                 id = startedAtEpochMs,
                 shipId = shipDef.id,
@@ -729,7 +829,11 @@ internal class GameWorld(
             ),
         )
         warningTitle = title
-        warningSubtitle = "Run archiviata. Score $score."
+        warningSubtitle = when {
+            success && config.mode == RunMode.Campaign -> "Obiettivo completato. Score $score."
+            config.mode == RunMode.Campaign -> "Nodo fallito. Score $score."
+            else -> "Run archiviata. Score $score."
+        }
         warningTime = 3f
         pushDamageFlash(0.35f)
         pushCameraShake(0.75f)
@@ -740,86 +844,167 @@ internal class GameWorld(
     fun rebuildSnapshot() {
         score = calculateScore()
         projectedArchiveXp = calculateProjectedArchiveXp()
+        val playerSnapshot = PlayerSnapshot(
+            shipId = shipDef.id,
+            position = player.position,
+            radius = player.radius,
+            hp = player.hp,
+            maxHp = player.maxHp,
+            shield = player.shield,
+            level = player.level,
+            xp = player.xp,
+            xpToNext = player.xpToNext,
+            dashCooldown = player.dashCooldown,
+            pulseCooldown = player.pulseCooldown,
+            shieldCooldown = player.shieldCooldown,
+            mineCooldown = player.mineCooldown,
+            hasShield = player.hasShield,
+            hasMine = player.hasMine,
+            activeShipColor = shipDef.accentColor,
+            trailColor = shipDef.trailColor,
+        )
+        val enemySnapshots = ArrayList<EnemySnapshot>(enemies.size)
+        enemies.forEach { enemy ->
+            enemySnapshots += EnemySnapshot(
+                id = enemy.runtimeId,
+                kindId = enemy.def.id,
+                label = enemy.def.label,
+                position = enemy.position,
+                radius = enemy.radius,
+                hpRatio = (enemy.hp / enemy.maxHp).coerceIn(0f, 1f),
+                color = enemy.color,
+                isElite = enemy.eliteAffix != null,
+                affixLabel = enemy.eliteAffix?.label,
+                telegraphAlpha = (enemy.telegraphRemaining / 0.8f).coerceIn(0f, 1f),
+            )
+        }
+        val projectileSnapshots = ArrayList<ProjectileSnapshot>(friendlyProjectiles.size + enemyProjectiles.size)
+        friendlyProjectiles.forEach { projectile ->
+            projectileSnapshots += ProjectileSnapshot(
+                id = projectile.id,
+                position = projectile.position,
+                radius = projectile.radius,
+                color = projectile.color,
+                friendly = true,
+            )
+        }
+        enemyProjectiles.forEach { projectile ->
+            projectileSnapshots += ProjectileSnapshot(
+                id = projectile.id,
+                position = projectile.position,
+                radius = projectile.radius,
+                color = projectile.color,
+                friendly = false,
+            )
+        }
+        val particleSnapshots = ArrayList<ParticleSnapshot>(particles.size)
+        particles.forEach { particle ->
+            particleSnapshots += ParticleSnapshot(
+                id = particle.id,
+                position = particle.position,
+                radius = particle.radius,
+                color = particle.color,
+                alpha = if (particle.maxTtl == 0f) 0f else (particle.ttl / particle.maxTtl).coerceIn(0f, 1f),
+            )
+        }
+        val pickupSnapshots = ArrayList<PickupSnapshot>(pickups.size)
+        pickups.forEach { pickup ->
+            pickupSnapshots += PickupSnapshot(
+                id = pickup.runtimeId,
+                position = pickup.position,
+                radius = if (pickup.kind == "xp") 6f else 8f,
+                color = if (pickup.kind == "xp") 0xFF9FF2FF else 0xFFFFCF75,
+                kind = pickup.kind,
+            )
+        }
+        val effectSnapshots = ArrayList<VisualEffectSnapshot>(visualEffects.size)
+        visualEffects.forEach { effect ->
+            effectSnapshots += VisualEffectSnapshot(
+                id = effect.id,
+                kind = effect.kind,
+                position = effect.position,
+                radius = effect.radius,
+                color = effect.color,
+                alpha = (effect.ttl / effect.maxTtl.coerceAtLeast(0.001f)).coerceIn(0f, 1f),
+                rotationDegrees = effect.rotationDegrees,
+                direction = effect.direction,
+            )
+        }
+        val warningSnapshot = if (warningTime > 0f && warningTitle != null && warningSubtitle != null) {
+            listOf(WarningSnapshot(warningTitle!!, warningSubtitle!!, warningTime))
+        } else {
+            emptyList()
+        }
+        val missionSnapshots = ArrayList<MissionSnapshot>(runMissions.size)
+        runMissions.forEach { mission ->
+            missionSnapshots += MissionSnapshot(
+                id = mission.def.id,
+                label = mission.def.label,
+                progress = mission.progress,
+                target = mission.def.target,
+                completed = mission.completed,
+                rewardCredits = mission.def.rewardCredits,
+            )
+        }
+        val overlaySnapshot = when (phase) {
+            RunPhase.ChoosingUpgrade -> {
+                val choices = ArrayList<UpgradeChoiceSnapshot>(pendingUpgradeChoices.size)
+                pendingUpgradeChoices.forEach { choice ->
+                    choices += UpgradeChoiceSnapshot(
+                        id = choice.id,
+                        label = choice.label,
+                        description = choice.description,
+                        category = choice.category,
+                        rarity = choice.rarity,
+                        currentStacks = upgradeStacks[choice.id] ?: 0,
+                        maxStacks = choice.maxStacks,
+                    )
+                }
+                OverlaySnapshot.LevelUp(
+                    level = player.level,
+                    rerollsRemaining = rerollsRemaining,
+                    choices = choices,
+                )
+            }
+            RunPhase.GameOver -> finalResult?.let { result ->
+                OverlaySnapshot.GameOver(
+                    title = when {
+                        result.success && config.mode == RunMode.Campaign -> "Sector Cleared"
+                        config.mode == RunMode.Campaign -> "Sector Failed"
+                        else -> "Run Conclusa"
+                    },
+                    summary = when {
+                        result.success && config.mode == RunMode.Campaign ->
+                            "${campaignNode?.label ?: "Objective"} completato, +${result.creditsEarned} crediti."
+                        config.mode == RunMode.Campaign ->
+                            "${campaignNode?.label ?: "Objective"} perso a wave $wave."
+                        else -> "Ondata $wave, ${result.kills} nemici eliminati, +${result.creditsEarned} crediti."
+                    },
+                    result = result,
+                )
+            }
+            RunPhase.Paused -> OverlaySnapshot.Pause(
+                title = "In Pausa",
+                subtitle = "Riposiziona i pollici e torna nel settore quando vuoi.",
+            )
+            else -> null
+        }
         snapshot = FrameSnapshot(
             phase = phase,
             bounds = bounds,
             elapsedSeconds = elapsedSeconds,
-            player = PlayerSnapshot(
-                shipId = shipDef.id,
-                position = player.position,
-                radius = player.radius,
-                hp = player.hp,
-                maxHp = player.maxHp,
-                shield = player.shield,
-                level = player.level,
-                xp = player.xp,
-                xpToNext = player.xpToNext,
-                dashCooldown = player.dashCooldown,
-                pulseCooldown = player.pulseCooldown,
-                shieldCooldown = player.shieldCooldown,
-                mineCooldown = player.mineCooldown,
-                activeShipColor = shipDef.accentColor,
-                trailColor = shipDef.trailColor,
-            ),
-            enemies = enemies.map { enemy ->
-                EnemySnapshot(
-                    id = enemy.runtimeId,
-                    kindId = enemy.def.id,
-                    label = enemy.def.label,
-                    position = enemy.position,
-                    radius = enemy.radius,
-                    hpRatio = (enemy.hp / enemy.maxHp).coerceIn(0f, 1f),
-                    color = enemy.color,
-                    isElite = enemy.eliteAffix != null,
-                    affixLabel = enemy.eliteAffix?.label,
-                    telegraphAlpha = (enemy.telegraphRemaining / 0.8f).coerceIn(0f, 1f),
-                )
-            },
-            projectiles = (friendlyProjectiles + enemyProjectiles).map { projectile ->
-                ProjectileSnapshot(
-                    id = projectile.id,
-                    position = projectile.position,
-                    radius = projectile.radius,
-                    color = projectile.color,
-                    friendly = projectile.friendly,
-                )
-            },
-            particles = particles.map { particle ->
-                ParticleSnapshot(
-                    id = particle.id,
-                    position = particle.position,
-                    radius = particle.radius,
-                    color = particle.color,
-                    alpha = if (particle.maxTtl == 0f) 0f else (particle.ttl / particle.maxTtl).coerceIn(0f, 1f),
-                )
-            },
-            pickups = pickups.map { pickup ->
-                PickupSnapshot(
-                    id = pickup.runtimeId,
-                    position = pickup.position,
-                    radius = if (pickup.kind == "xp") 6f else 8f,
-                    color = if (pickup.kind == "xp") 0xFF9FF2FF else 0xFFFFCF75,
-                    kind = pickup.kind,
-                )
-            },
+            player = playerSnapshot,
+            enemies = enemySnapshots,
+            projectiles = projectileSnapshots,
+            particles = particleSnapshots,
+            pickups = pickupSnapshots,
             visualFx = VisualFxSnapshot(
                 cameraShake = cameraShake,
                 damageFlash = damageFlash,
                 dashAlpha = (player.dashRemaining / 0.22f).coerceIn(0f, 1f),
                 shieldAlpha = (player.shieldRemaining / 4.2f).coerceIn(0f, 1f),
                 overdriveAlpha = (player.overdriveRemaining / player.overdriveDuration.coerceAtLeast(0.001f)).coerceIn(0f, 1f),
-                effects = visualEffects.map { effect ->
-                    VisualEffectSnapshot(
-                        id = effect.id,
-                        kind = effect.kind,
-                        position = effect.position,
-                        radius = effect.radius,
-                        color = effect.color,
-                        alpha = (effect.ttl / effect.maxTtl.coerceAtLeast(0.001f)).coerceIn(0f, 1f),
-                        rotationDegrees = effect.rotationDegrees,
-                        direction = effect.direction,
-                    )
-                },
+                effects = effectSnapshots,
             ),
             hud = HudSnapshot(
                 shipLabel = shipDef.label,
@@ -831,53 +1016,12 @@ internal class GameWorld(
                 credits = creditsEarned,
                 archiveXpProjected = projectedArchiveXp,
                 activeEventLabel = activeEvent?.label,
+                modeLabel = if (config.mode == RunMode.Campaign) "Campaign" else "Endless",
+                objective = objectiveSnapshot(),
             ),
-            warnings = listOfNotNull(
-                if (warningTime > 0f && warningTitle != null && warningSubtitle != null) {
-                    WarningSnapshot(warningTitle!!, warningSubtitle!!, warningTime)
-                } else {
-                    null
-                },
-            ),
-            runMissions = runMissions.map { mission ->
-                MissionSnapshot(
-                    id = mission.def.id,
-                    label = mission.def.label,
-                    progress = mission.progress,
-                    target = mission.def.target,
-                    completed = mission.completed,
-                    rewardCredits = mission.def.rewardCredits,
-                )
-            },
-            overlay = when (phase) {
-                RunPhase.ChoosingUpgrade -> OverlaySnapshot.LevelUp(
-                    level = player.level,
-                    rerollsRemaining = rerollsRemaining,
-                    choices = pendingUpgradeChoices.map { choice ->
-                        UpgradeChoiceSnapshot(
-                            id = choice.id,
-                            label = choice.label,
-                            description = choice.description,
-                            category = choice.category,
-                            rarity = choice.rarity,
-                            currentStacks = upgradeStacks[choice.id] ?: 0,
-                            maxStacks = choice.maxStacks,
-                        )
-                    },
-                )
-                RunPhase.GameOver -> finalResult?.let { result ->
-                    OverlaySnapshot.GameOver(
-                        title = "Run Conclusa",
-                        summary = "Ondata $wave, ${result.kills} nemici eliminati, +${result.creditsEarned} crediti.",
-                        result = result,
-                    )
-                }
-                RunPhase.Paused -> OverlaySnapshot.Pause(
-                    title = "In Pausa",
-                    subtitle = "Riposiziona i pollici e torna nel settore quando vuoi.",
-                )
-                else -> null
-            },
+            warnings = warningSnapshot,
+            runMissions = missionSnapshots,
+            overlay = overlaySnapshot,
         )
     }
 }
@@ -914,29 +1058,36 @@ private class TimingSystem : System {
 private class SpawnSystem : System {
     override fun update(world: GameWorld, input: InputSnapshot, deltaSeconds: Float) {
         val modifierSpawn = world.activeEvent?.spawnRateMultiplier ?: 1f
-        val baseWaveDuration = if ("long_burn" in world.config.modifiers) 20.5f else 16.5f
-        val nextSpawnDelay = max(0.26f, (1.02f - world.wave * 0.035f) / modifierSpawn)
+        val baseWaveDuration = if ("long_burn" in world.config.modifiers) 22.5f else 18.5f
+        val nextSpawnDelay = max(0.34f, (1.14f - world.wave * 0.03f) / modifierSpawn)
 
         if (world.waveElapsed >= baseWaveDuration) {
             world.wave++
             world.waveElapsed = 0f
-            world.spawnTimer = 0.35f
+            world.spawnTimer = 0.5f
             world.bossSpawnedThisWave = false
             world.minibossSpawnedThisWave = false
-            val biomeIndex = min((world.wave - 1) / 5, world.content.biomes.lastIndex)
-            if (biomeIndex != world.activeBiomeIndex) {
-                world.activeBiomeIndex = biomeIndex
-                world.activeBiome = world.content.biomes[biomeIndex]
-                world.discoveredBiomeIds += world.activeBiome.id
-                world.warningTitle = world.activeBiome.label
-                world.warningSubtitle = world.activeBiome.subtitle
-                world.warningTime = 3.1f
+            if (world.config.forcedBiomeId == null) {
+                val biomeIndex = min((world.wave - 1) / 5, world.content.biomes.lastIndex)
+                if (biomeIndex != world.activeBiomeIndex) {
+                    world.activeBiomeIndex = biomeIndex
+                    world.activeBiome = world.content.biomes[biomeIndex]
+                    world.discoveredBiomeIds += world.activeBiome.id
+                    world.warningTitle = world.activeBiome.label
+                    world.warningSubtitle = world.activeBiome.subtitle
+                    world.warningTime = 3.1f
+                } else {
+                    world.warningTitle = "Wave ${world.wave}"
+                    world.warningSubtitle = "Il settore aumenta la pressione."
+                    world.warningTime = 1.8f
+                }
             } else {
                 world.warningTitle = "Wave ${world.wave}"
-                world.warningSubtitle = "Il settore aumenta la pressione."
+                world.warningSubtitle = world.config.objective?.displayLabel() ?: "Il settore resta bloccato sul nodo corrente."
                 world.warningTime = 1.8f
             }
             world.updateRunMissionProgress()
+            world.checkObjectiveCompletion()
         }
 
         if (world.wave >= 3 && world.activeEvent == null && world.wave % 3 == 0 && world.waveElapsed < 0.3f) {
@@ -1068,12 +1219,20 @@ private class PlayerCombatSystem : System {
     private fun chainPulse(world: GameWorld, source: EnemyState, damage: Float, jumps: Int) {
         var current = source
         repeat(jumps) {
-            val next = world.enemies
-                .filter { it.runtimeId != current.runtimeId && it.position.distanceTo(current.position) < 140f }
-                .minByOrNull { it.position.distanceTo(current.position) } ?: return
-            next.hp -= damage
-            world.spawnParticles(next.position, 0xFFE4EAFF, 6, speed = 120f, ttlRange = 0.08f..0.16f)
-            current = next
+            var next: EnemyState? = null
+            var bestDistanceSquared = 140f * 140f
+            world.enemies.forEach { candidate ->
+                if (candidate.runtimeId == current.runtimeId) return@forEach
+                val distanceSquared = candidate.position.distanceSquaredTo(current.position)
+                if (distanceSquared < bestDistanceSquared) {
+                    next = candidate
+                    bestDistanceSquared = distanceSquared
+                }
+            }
+            val chainedEnemy = next ?: return
+            chainedEnemy.hp -= damage
+            world.spawnParticles(chainedEnemy.position, 0xFFE4EAFF, 6, speed = 120f, ttlRange = 0.08f..0.16f)
+            current = chainedEnemy
         }
     }
 }
@@ -1081,13 +1240,15 @@ private class PlayerCombatSystem : System {
 private class EnemySystem : System {
     override fun update(world: GameWorld, input: InputSnapshot, deltaSeconds: Float) {
         val player = world.player
+        val glassDriveMultiplier = if (world.glassDriveActive) 1.16f else 1f
 
         val enemyIterator = world.enemies.iterator()
         while (enemyIterator.hasNext()) {
             val enemy = enemyIterator.next()
             val toPlayer = player.position - enemy.position
-            val distance = toPlayer.length()
-            val direction = toPlayer.normalized()
+            val distanceSquared = toPlayer.lengthSquared()
+            val distance = sqrt(distanceSquared)
+            val direction = toPlayer.normalized(distance)
 
             when (enemy.def.role) {
                 "shooter" -> {
@@ -1125,9 +1286,8 @@ private class EnemySystem : System {
             }
 
             if (distance < enemy.radius + player.radius) {
-                val glassMultiplier = if ("glass_drive" in world.config.modifiers) 1.16f else 1f
                 val contactDamage = (enemy.def.contactDamage + enemy.eliteAffix?.extraContactDamage.orZero()) * (1f + world.wave * 0.045f)
-                world.applyPlayerDamage(contactDamage * glassMultiplier)
+                world.applyPlayerDamage(contactDamage * glassDriveMultiplier)
                 enemy.position -= direction * 18f
                 if (player.shieldRemaining > 0f) {
                     enemy.hp -= 20f
@@ -1178,6 +1338,7 @@ private class EnemySystem : System {
     }
 
     private fun updateProjectiles(world: GameWorld, deltaSeconds: Float) {
+        val glassDriveMultiplier = if (world.glassDriveActive) 1.16f else 1f
         val friendlyIterator = world.friendlyProjectiles.iterator()
         while (friendlyIterator.hasNext()) {
             val projectile = friendlyIterator.next()
@@ -1188,7 +1349,8 @@ private class EnemySystem : System {
             val enemyIterator = world.enemies.iterator()
             while (!consumed && enemyIterator.hasNext()) {
                 val enemy = enemyIterator.next()
-                if (projectile.position.distanceTo(enemy.position) <= projectile.radius + enemy.radius) {
+                val collisionRadius = projectile.radius + enemy.radius
+                if (projectile.position.distanceSquaredTo(enemy.position) <= collisionRadius * collisionRadius) {
                     enemy.hp -= projectile.damage
                     consumed = projectile.remainingPierce <= 0
                     projectile.remainingPierce--
@@ -1221,10 +1383,10 @@ private class EnemySystem : System {
             val projectile = hostileIterator.next()
             projectile.position += projectile.velocity * deltaSeconds
             projectile.ttl -= deltaSeconds
-            val hitPlayer = projectile.position.distanceTo(world.player.position) <= projectile.radius + world.player.radius
+            val collisionRadius = projectile.radius + world.player.radius
+            val hitPlayer = projectile.position.distanceSquaredTo(world.player.position) <= collisionRadius * collisionRadius
             if (hitPlayer) {
-                val glassMultiplier = if ("glass_drive" in world.config.modifiers) 1.16f else 1f
-                world.applyPlayerDamage(projectile.damage * glassMultiplier)
+                world.applyPlayerDamage(projectile.damage * glassDriveMultiplier)
                 world.spawnVisualEffect(VisualEffectKind.Hit, world.player.position, 48f, projectile.color, ttl = 0.18f)
             }
             if (hitPlayer || projectile.ttl <= 0f || !inside(world.bounds, projectile.position, 60f)) {
@@ -1239,12 +1401,24 @@ private class EnemySystem : System {
         while (mineIterator.hasNext()) {
             val mine = mineIterator.next()
             mine.ttl -= deltaSeconds
-            val triggered = world.enemies.any { enemy -> enemy.position.distanceTo(mine.position) < mine.radius * 0.72f }
+            val triggerRadius = mine.radius * 0.72f
+            val triggerRadiusSquared = triggerRadius * triggerRadius
+            var triggered = mine.ttl <= 0f
+            if (!triggered) {
+                for (enemy in world.enemies) {
+                    if (enemy.position.distanceSquaredTo(mine.position) < triggerRadiusSquared) {
+                        triggered = true
+                        break
+                    }
+                }
+            }
             if (mine.ttl <= 0f || triggered) {
-                world.enemies.toList().forEach { enemy ->
-                    val distance = enemy.position.distanceTo(mine.position)
-                    if (distance <= mine.radius + enemy.radius) {
-                        enemy.hp -= mine.power * (1f - distance / (mine.radius + enemy.radius) * 0.5f)
+                world.enemies.forEach { enemy ->
+                    val collisionRadius = mine.radius + enemy.radius
+                    val distanceSquared = enemy.position.distanceSquaredTo(mine.position)
+                    if (distanceSquared <= collisionRadius * collisionRadius) {
+                        val distance = sqrt(distanceSquared)
+                        enemy.hp -= mine.power * (1f - distance / collisionRadius * 0.5f)
                     }
                 }
                 world.spawnParticles(mine.position, 0xFFFFCF75, 20, speed = 220f, ttlRange = 0.12f..0.4f)
@@ -1266,12 +1440,16 @@ private class ProgressionSystem : System {
         val pickupIterator = world.pickups.iterator()
         while (pickupIterator.hasNext()) {
             val pickup = pickupIterator.next()
-            val distance = world.player.position.distanceTo(pickup.position)
-            if (distance < world.player.magnetRadius) {
-                val direction = (world.player.position - pickup.position).normalized()
+            val toPlayer = world.player.position - pickup.position
+            val distanceSquared = toPlayer.lengthSquared()
+            val magnetRadius = world.player.magnetRadius
+            if (distanceSquared < magnetRadius * magnetRadius) {
+                val distance = sqrt(distanceSquared)
+                val direction = toPlayer.normalized(distance)
                 pickup.position += direction * (160f + pickup.value * 14f) * world.player.pickupSpeedMultiplier * deltaSeconds
             }
-            if (distance < world.player.radius + 10f) {
+            val pickupRadius = world.player.radius + 10f
+            if (distanceSquared < pickupRadius * pickupRadius) {
                 when (pickup.kind) {
                     "xp" -> {
                         world.player.xp += pickup.value
@@ -1281,6 +1459,10 @@ private class ProgressionSystem : System {
                         }
                     }
                     "credit" -> world.creditsEarned += pickup.value
+                }
+                if (pickup.kind == "credit") {
+                    world.updateRunMissionProgress()
+                    world.checkObjectiveCompletion()
                 }
                 world.spawnVisualEffect(
                     kind = VisualEffectKind.Pickup,
@@ -1292,7 +1474,6 @@ private class ProgressionSystem : System {
                 pickupIterator.remove()
             }
         }
-        world.updateRunMissionProgress()
     }
 }
 
@@ -1318,9 +1499,8 @@ private class CleanupSystem : System {
             }
         }
         if (world.queuedEnemySpawns.isNotEmpty()) {
-            val pending = world.queuedEnemySpawns.toList()
+            world.queuedEnemySpawns.forEach { world.spawnEnemy(it) }
             world.queuedEnemySpawns.clear()
-            pending.forEach { world.spawnEnemy(it) }
         }
     }
 }

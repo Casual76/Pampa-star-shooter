@@ -5,12 +5,14 @@ import com.antigravity.pampastarshooter.core.content.DefaultGameContent
 import com.antigravity.pampastarshooter.core.model.InputSnapshot
 import com.antigravity.pampastarshooter.core.model.PlayerProfile
 import com.antigravity.pampastarshooter.core.model.RunConfig
+import com.antigravity.pampastarshooter.core.model.RunMode
 import com.antigravity.pampastarshooter.core.model.VisualEffectKind
 import com.antigravity.pampastarshooter.core.model.applyRunResult
 import kotlin.math.abs
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -87,19 +89,124 @@ class PampaGameEngineTest {
     }
 
     @Test
-    fun waveEightRunUnlocksAdvancedShips() {
-        val world = newWorld()
-        world.wave = 8
-        world.kills = 90
-        world.creditsEarned = 54
-        world.bossesDefeated = 2
+    fun equippedPerksStackWithCoreModulesOnOpeningStats() {
+        val boostedProfile = DefaultGameContent.starterProfile().copy(
+            unlockTree = DefaultGameContent.starterProfile().unlockTree.copy(
+                permanentModules = DefaultGameContent.starterProfile().unlockTree.permanentModules + mapOf(
+                    "thrusters" to 1,
+                    "cache" to 1,
+                    "reroll" to 1,
+                ),
+            ),
+            unlockedPerkIds = setOf("dash_coil", "draft_cache"),
+            equippedPerkIds = listOf("dash_coil", "draft_cache"),
+        )
+        val world = newWorld(profile = boostedProfile)
 
-        world.finishRun("Archive")
+        assertTrue(abs(world.player.moveSpeed - (content.ships.first().moveSpeed * 1.035f * 1.06f)) < 0.001f)
+        assertTrue(abs(world.player.scoreMultiplier - 1.13f) < 0.001f)
+        assertEquals(3, world.rerollsRemaining)
+    }
+
+    @Test
+    fun campaignNodesAutoCompleteEachObjectiveType() {
+        listOf(
+            "sector1_recon" to { world: GameWorld -> world.wave = 4 },
+            "sector1_sweep" to { world: GameWorld -> world.kills = 55 },
+            "sector1_salvage" to { world: GameWorld -> world.creditsEarned = 32 },
+            "sector1_boss" to { world: GameWorld -> world.bossesDefeated = 1 },
+        ).forEach { (nodeId, completeObjective) ->
+            val world = newCampaignWorld(nodeId)
+
+            completeObjective(world)
+            world.checkObjectiveCompletion()
+
+            val result = world.finalResult
+            assertNotNull(result, nodeId)
+            assertTrue(result.success, nodeId)
+            assertEquals(nodeId, result.campaignNodeId)
+        }
+    }
+
+    @Test
+    fun campaignBossNodeUnlocksSectorRewardsOnSuccess() {
+        val world = newCampaignWorld("sector1_boss")
+        world.bossesDefeated = 1
+
+        world.checkObjectiveCompletion()
 
         val result = world.finalResult
         assertNotNull(result)
+        assertTrue(result.success)
         assertTrue(DefaultGameContent.ShipWarden in result.unlockedShipIds)
-        assertTrue(DefaultGameContent.ShipSpecter in result.unlockedShipIds)
+        assertEquals(setOf("emergency_shield", "dash_coil"), result.unlockedPerkIds)
+    }
+
+    @Test
+    fun failedCampaignRunDoesNotUnlockBossRewardsOrAdvanceProgression() {
+        val world = newCampaignWorld("sector1_boss")
+
+        world.finishRun("Signal Lost")
+
+        val result = world.finalResult
+        assertNotNull(result)
+        assertFalse(result.success)
+        assertTrue(result.unlockedShipIds.isEmpty())
+        assertTrue(result.unlockedPerkIds.isEmpty())
+
+        val updated = profile.applyRunResult(result, content)
+        assertTrue("sector1_boss" !in updated.campaignState.completedNodeIds)
+        assertTrue(DefaultGameContent.ShipWarden !in updated.unlockTree.unlockedShipIds)
+        assertTrue("dash_coil" !in updated.unlockedPerkIds)
+    }
+
+    @Test
+    fun strikerSnapshotOnlyShowsUnlockedActiveAbilities() {
+        val starterSnapshot = newWorld().snapshot.player
+        assertNotNull(starterSnapshot)
+        assertFalse(starterSnapshot.hasShield)
+        assertFalse(starterSnapshot.hasMine)
+
+        val shieldProfile = profile.copy(
+            unlockedPerkIds = setOf("emergency_shield"),
+            equippedPerkIds = listOf("emergency_shield"),
+        )
+        val shieldSnapshot = newWorld(profile = shieldProfile).snapshot.player
+        assertNotNull(shieldSnapshot)
+        assertTrue(shieldSnapshot.hasShield)
+        assertFalse(shieldSnapshot.hasMine)
+
+        val wardenSnapshot = GameWorld(
+            content = content,
+            config = RunConfig(
+                shipId = DefaultGameContent.ShipWarden,
+                seed = 24L,
+            ),
+            profile = profile.copy(selectedShipId = DefaultGameContent.ShipWarden),
+            random = Random(24L),
+        ).snapshot.player
+        assertNotNull(wardenSnapshot)
+        assertTrue(wardenSnapshot.hasShield)
+        assertTrue(wardenSnapshot.hasMine)
+    }
+
+    @Test
+    fun openingSpawnTimerStartsSlowerThanPreviousTuning() {
+        val world = newWorld()
+        assertTrue(abs(world.spawnTimer - 0.55f) < 0.001f)
+
+        val denseWorld = GameWorld(
+            content = content,
+            config = RunConfig(
+                shipId = DefaultGameContent.ShipStriker,
+                seed = 84L,
+                mode = RunMode.Endless,
+                modifiers = listOf("dense_swarm"),
+            ),
+            profile = profile,
+            random = Random(84L),
+        )
+        assertTrue(abs(denseWorld.spawnTimer - 0.495f) < 0.001f)
     }
 
     @Test
@@ -167,6 +274,27 @@ class PampaGameEngineTest {
         profile = profile,
         random = Random(42L),
     )
+
+    private fun newCampaignWorld(
+        nodeId: String,
+        profile: PlayerProfile = this.profile,
+    ): GameWorld {
+        val sector = content.campaignSectors.first { campaignSector -> campaignSector.nodes.any { it.id == nodeId } }
+        val node = sector.nodes.first { it.id == nodeId }
+        return GameWorld(
+            content = content,
+            config = RunConfig(
+                shipId = DefaultGameContent.ShipStriker,
+                seed = 42L,
+                mode = RunMode.Campaign,
+                campaignNodeId = node.id,
+                forcedBiomeId = sector.biomeId,
+                objective = node.objective,
+            ),
+            profile = profile,
+            random = Random(42L),
+        )
+    }
 
     private val repository = object : ContentRepository {
         override fun load() = content
