@@ -1,37 +1,47 @@
 {
-  "app": {
-    "id": "pampa-star-shooter",
-    "name": "Pampa star shooter",
-    "description": "Pampa star shooter Android app",
-    "packageName": "com.antigravity.pampastarshooter",
-    "iconUrl": "",
-    "category": "Giochi",
-    "developer": "Pampa",
-    "screenshots": [],
-    "repository": {
-      "repoOwner": "Casual76",
-      "repoName": "Pampa-star-shooter",
-      "manifestPath": "manifest.json",
-      "ref": ""
-    },
-    "stable": {
-      "version": "1.0.0",
-      "releaseDate": "2026-04-07",
-      "changelog": "Visual overhaul with generated assets, layered VFX, new Operations pre-run flow, refreshed HUD, and deeper progression systems.",
-      "releaseTag": "stable-pampa-star-shooter-v1.0.0",
-      "apkAsset": "pampa-star-shooter-1.0.0.apk",
-      "exeAsset": "",
-      "sizeBytes": 48264645
-    },
-    "beta": {
-      "version": "1.0.0",
-      "releaseDate": "2026-04-07",
-      "changelog": "Visual overhaul with generated assets, layered VFX, new Operations pre-run flow, refreshed HUD, and deeper progression systems.",
-      "releaseTag": "stable-pampa-star-shooter-v1.0.0",
-      "apkAsset": "pampa-star-shooter-1.0.0.apk",
-      "exeAsset": "",
-      "sizeBytes": 48264645
-    },
-    "history": []
-  }
+    "app": {
+        "id": "Pampa-star-shooter",
+        "name": "Pampa star shooter",
+        "description": "Pampa star shooter Android app",
+        "packageName": "com.antigravity.pampastarshooter",
+        "iconUrl": "",
+        "category": "Giochi",
+        "developer": "Pampa",
+        "screenshots": [],
+        "repository": {
+            "repoOwner": "Casual76",
+            "repoName": "Pampa-star-shooter",
+            "manifestPath": "manifest.json",
+            "ref": ""
+        },
+        "stable": {
+            "version": "1.0.1",
+            "releaseDate": "2026-04-07",
+            "changelog": "Bozza generata automaticamente dal profilo Pampa star shooter per la versione 1.0.1. Asset rilevati: pampa-star-shooter-1.0.1.apk.",
+            "releaseTag": "stable-Pampa-star-shooter-v1.0.1",
+            "apkAsset": "Pampa-star-shooter-1.0.1.apk",
+            "exeAsset": "",
+            "sizeBytes": 0
+        },
+        "beta": {
+            "version": "1.0.1",
+            "releaseDate": "2026-04-07",
+            "changelog": "Bozza generata automaticamente dal profilo Pampa star shooter per la versione 1.0.1. Asset rilevati: pampa-star-shooter-1.0.1.apk.",
+            "releaseTag": "stable-Pampa-star-shooter-v1.0.1",
+            "apkAsset": "Pampa-star-shooter-1.0.1.apk",
+            "exeAsset": "",
+            "sizeBytes": 0
+        },
+        "history": [
+            {
+                "version": "1.0.0",
+                "releaseDate": "2026-04-07",
+                "changelog": "Visual overhaul with generated assets, layered VFX, new Operations pre-run flow, refreshed HUD, and deeper progression systems.",
+                "releaseTag": "stable-pampa-star-shooter-v1.0.0",
+                "apkAsset": "pampa-star-shooter-1.0.0.apk",
+                "exeAsset": "",
+                "sizeBytes": 48264645
+            }
+        ]
+    }
 }
