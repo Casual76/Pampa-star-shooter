@@ -24,15 +24,24 @@
             "sizeBytes": 48264645
         },
         "beta": {
-            "version": "1.0.1",
+            "version": "1.0.2",
             "releaseDate": "2026-04-07",
-            "changelog": "Bozza generata automaticamente dal profilo Pampa star shooter per la versione 1.0.1. Asset rilevati: pampa-star-shooter-1.0.1.apk.",
-            "releaseTag": "beta-Pampa-star-shooter-v1.0.1",
-            "apkAsset": "Pampa-star-shooter-1.0.1.apk",
+            "changelog": "Bozza generata automaticamente dal profilo Pampa star shooter per la versione 1.0.2. Asset rilevati: pampa-star-shooter-1.0.2.apk.",
+            "releaseTag": "beta-Pampa-star-shooter-v1.0.2",
+            "apkAsset": "Pampa-star-shooter-1.0.2.apk",
             "exeAsset": "",
             "sizeBytes": 0
         },
         "history": [
+            {
+                "version": "1.0.1",
+                "releaseDate": "2026-04-07",
+                "changelog": "Bozza generata automaticamente dal profilo Pampa star shooter per la versione 1.0.1. Asset rilevati: pampa-star-shooter-1.0.1.apk.",
+                "releaseTag": "beta-Pampa-star-shooter-v1.0.1",
+                "apkAsset": "Pampa-star-shooter-1.0.1.apk",
+                "exeAsset": "",
+                "sizeBytes": 0
+            },
             {
                 "version": "1.0.0",
                 "releaseDate": "2026-04-07",
