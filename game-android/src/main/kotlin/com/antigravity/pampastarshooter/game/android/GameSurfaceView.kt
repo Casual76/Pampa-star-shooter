@@ -21,7 +21,7 @@ class GameSurfaceView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
 ) : SurfaceView(context, attrs), SurfaceHolder.Callback {
-    private val renderer = AndroidGameRenderer()
+    private val renderer = AndroidGameRenderer(context)
     private val mainHandler = Handler(Looper.getMainLooper())
 
     @Volatile

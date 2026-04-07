@@ -1,5 +1,6 @@
 package com.antigravity.pampastarshooter.ui
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -49,13 +50,16 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -73,7 +77,9 @@ import com.antigravity.pampastarshooter.core.model.GameSettings
 import com.antigravity.pampastarshooter.core.model.GraphicsProfile
 import com.antigravity.pampastarshooter.core.model.PlayerProfile
 import com.antigravity.pampastarshooter.core.model.RunHistoryEntry
+import com.antigravity.pampastarshooter.core.model.RunModifier
 import com.antigravity.pampastarshooter.data.repository.SettingsRepository
+import com.antigravity.pampastarshooter.game.android.R as GameAndroidR
 import kotlinx.coroutines.launch
 
 private object Route {
@@ -83,6 +89,7 @@ private object Route {
     const val Missions = "missions"
     const val Settings = "settings"
     const val History = "history"
+    const val Operations = "operations"
     const val Game = "game"
 }
 
@@ -96,6 +103,10 @@ private val PampaMint = Color(0xFF88FFC8)
 private val PampaText = Color(0xFFF3FAFF)
 private val PampaMuted = Color(0xFFA7BBCC)
 
+private data class PendingRunSetup(
+    val modifiers: List<String> = emptyList(),
+)
+
 @Composable
 fun PampaStarShooterApp(
     container: AppContainer,
@@ -106,43 +117,65 @@ fun PampaStarShooterApp(
     val settings by container.settingsRepository.settings.collectAsState(initial = GameSettings())
     val history by container.historyRepository.history.collectAsState(initial = emptyList())
     val content = remember { container.contentRepository.load() }
+    var pendingRunSetup by remember { mutableStateOf(PendingRunSetup()) }
 
-    NavHost(navController = navController, startDestination = Route.Home) {
-        composable(Route.Home) {
-            HomeScreen(
-                profile = profile,
-                content = content,
-                onSelectShip = { shipId -> coroutineScope.launch { container.profileRepository.setSelectedShip(shipId) } },
-                onDismissOnboarding = { coroutineScope.launch { container.profileRepository.markTutorialSeen() } },
-                onNavigate = navController::navigate,
-            )
-        }
-        composable(Route.Lab) {
-            LabScreen(
-                profile = profile,
-                content = content,
-                onBack = { navController.popBackStack() },
-                onUpgrade = { moduleId ->
-                    coroutineScope.launch {
-                        container.profileRepository.upgradeModule(moduleId)
-                    }
-                },
-            )
-        }
-        composable(Route.Codex) {
-            CodexScreen(profile = profile, content = content, onBack = { navController.popBackStack() })
-        }
-        composable(Route.Missions) {
-            MissionsScreen(profile = profile, onBack = { navController.popBackStack() })
-        }
-        composable(Route.Settings) {
-            SettingsScreen(settings = settings, repository = container.settingsRepository, onBack = { navController.popBackStack() })
-        }
-        composable(Route.History) {
-            HistoryScreen(history = history, onBack = { navController.popBackStack() })
-        }
-        composable(Route.Game) {
-            GameScreen(container = container, profile = profile, settings = settings, onExit = { navController.popBackStack() })
+    ProvidePampaChrome(settings) {
+        NavHost(navController = navController, startDestination = Route.Home) {
+            composable(Route.Home) {
+                HomeScreen(
+                    profile = profile,
+                    content = content,
+                    onSelectShip = { shipId -> coroutineScope.launch { container.profileRepository.setSelectedShip(shipId) } },
+                    onDismissOnboarding = { coroutineScope.launch { container.profileRepository.markTutorialSeen() } },
+                    onNavigate = navController::navigate,
+                )
+            }
+            composable(Route.Lab) {
+                LabScreen(
+                    profile = profile,
+                    content = content,
+                    onBack = { navController.popBackStack() },
+                    onUpgrade = { moduleId ->
+                        coroutineScope.launch {
+                            container.profileRepository.upgradeModule(moduleId)
+                        }
+                    },
+                )
+            }
+            composable(Route.Codex) {
+                CodexScreen(profile = profile, content = content, onBack = { navController.popBackStack() })
+            }
+            composable(Route.Missions) {
+                MissionsScreen(profile = profile, onBack = { navController.popBackStack() })
+            }
+            composable(Route.Settings) {
+                SettingsScreen(settings = settings, repository = container.settingsRepository, onBack = { navController.popBackStack() })
+            }
+            composable(Route.History) {
+                HistoryScreen(history = history, onBack = { navController.popBackStack() })
+            }
+            composable(Route.Operations) {
+                OperationsScreen(
+                    profile = profile,
+                    content = content,
+                    selectedModifierIds = pendingRunSetup.modifiers,
+                    onBack = { navController.popBackStack() },
+                    onModifierChange = { pendingRunSetup = pendingRunSetup.copy(modifiers = it) },
+                    onLaunch = { modifiers ->
+                        pendingRunSetup = pendingRunSetup.copy(modifiers = modifiers)
+                        navController.navigate(Route.Game)
+                    },
+                )
+            }
+            composable(Route.Game) {
+                GameScreen(
+                    container = container,
+                    profile = profile,
+                    settings = settings,
+                    selectedModifiers = pendingRunSetup.modifiers,
+                    onExit = { navController.popBackStack() },
+                )
+            }
         }
     }
 }
@@ -152,12 +185,13 @@ private fun AppBackdrop(
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit,
 ) {
+    val ui = chrome()
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(
                 Brush.verticalGradient(
-                    colors = listOf(Color(0xFF07101A), Color(0xFF0A1520), PampaInk),
+                    colors = listOf(Color(0xFF07101A), Color(0xFF0A1520), ui.inkArgb.asColor()),
                 ),
             ),
     ) {
@@ -165,21 +199,21 @@ private fun AppBackdrop(
             modifier = Modifier
                 .padding(start = 10.dp, top = 34.dp)
                 .size(280.dp)
-                .background(Brush.radialGradient(listOf(PampaCyan.copy(alpha = 0.22f), Color.Transparent)), CircleShape),
+                .background(Brush.radialGradient(listOf(ui.cyanArgb.asColor().copy(alpha = 0.22f), Color.Transparent)), CircleShape),
         )
         Box(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(bottom = 30.dp)
                 .size(360.dp)
-                .background(Brush.radialGradient(listOf(PampaAmber.copy(alpha = 0.18f), Color.Transparent)), CircleShape),
+                .background(Brush.radialGradient(listOf(ui.amberArgb.asColor().copy(alpha = 0.18f), Color.Transparent)), CircleShape),
         )
         Box(
             modifier = Modifier
                 .align(Alignment.CenterEnd)
                 .padding(end = 42.dp)
                 .size(220.dp)
-                .background(Brush.radialGradient(listOf(PampaLavender.copy(alpha = 0.12f), Color.Transparent)), CircleShape),
+                .background(Brush.radialGradient(listOf(ui.lavenderArgb.asColor().copy(alpha = 0.12f), Color.Transparent)), CircleShape),
         )
         content()
     }
@@ -192,6 +226,7 @@ private fun PosterScaffold(
     onBack: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val ui = chrome()
     AppBackdrop {
         Column(
             modifier = Modifier
@@ -209,12 +244,12 @@ private fun PosterScaffold(
                 ) {
                     if (onBack != null) {
                         IconButton(onClick = onBack, modifier = Modifier.clip(CircleShape).background(Color(0x14000000))) {
-                            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = PampaText)
+                            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = ui.textArgb.asColor())
                         }
                     }
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(title, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Black, fontSize = 28.sp, color = PampaText)
-                        Text(subtitle, color = PampaMuted, style = MaterialTheme.typography.bodyMedium)
+                        Text(title, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Black, fontSize = 28.sp, color = ui.textArgb.asColor())
+                        Text(subtitle, color = ui.mutedArgb.asColor(), style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             }
@@ -230,37 +265,46 @@ private fun GlassPanel(
     accent: Color = PampaCyan,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val ui = chrome()
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(30.dp))
-            .background(Brush.verticalGradient(listOf(PampaPanelTop, PampaPanelBottom)))
-            .border(1.dp, accent.copy(alpha = 0.28f), RoundedCornerShape(30.dp))
+            .background(Brush.verticalGradient(listOf(ui.panelTopArgb.asColor(), ui.panelBottomArgb.asColor())))
+            .border(1.dp, accent.copy(alpha = ui.edgeAlpha), RoundedCornerShape(30.dp))
             .padding(18.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
         content = content,
     )
 }
 
-private fun shipAccent(shipId: String): Color = when (shipId) {
-    "ship_warden" -> PampaMint
-    "ship_specter" -> PampaLavender
-    else -> PampaCyan
+@Composable
+private fun shipAccent(shipId: String): Color {
+    val ui = chrome()
+    return when (shipId) {
+        "ship_warden" -> ui.mintArgb.asColor()
+        "ship_specter" -> ui.lavenderArgb.asColor()
+        else -> ui.cyanArgb.asColor()
+    }
 }
 
-private fun moduleAccent(moduleId: String): Color = when (moduleId) {
-    "hull" -> PampaCyan
-    "reactor" -> PampaAmber
-    "bulwark" -> PampaMint
-    "reserve" -> PampaMint
-    "targeting" -> PampaLavender
-    "capacitor" -> PampaAmber
-    "ordnance" -> PampaAmber
-    "thrusters" -> PampaCyan
-    "magnet" -> PampaCyan
-    "cache" -> PampaLavender
-    "overdrive" -> PampaLavender
-    "reroll" -> PampaAmber
-    else -> PampaCyan
+@Composable
+private fun moduleAccent(moduleId: String): Color {
+    val ui = chrome()
+    return when (moduleId) {
+        "hull" -> ui.cyanArgb.asColor()
+        "reactor" -> ui.amberArgb.asColor()
+        "bulwark" -> ui.mintArgb.asColor()
+        "reserve" -> ui.mintArgb.asColor()
+        "targeting" -> ui.lavenderArgb.asColor()
+        "capacitor" -> ui.amberArgb.asColor()
+        "ordnance" -> ui.amberArgb.asColor()
+        "thrusters" -> ui.cyanArgb.asColor()
+        "magnet" -> ui.cyanArgb.asColor()
+        "cache" -> ui.lavenderArgb.asColor()
+        "overdrive" -> ui.lavenderArgb.asColor()
+        "reroll" -> ui.amberArgb.asColor()
+        else -> ui.cyanArgb.asColor()
+    }
 }
 
 private fun categoryLabel(category: LabCategory): String = when (category) {
@@ -285,6 +329,7 @@ private fun HomeScreen(
     onDismissOnboarding: () -> Unit,
     onNavigate: (String) -> Unit,
 ) {
+    val ui = chrome()
     val selectedShip = content.ships.firstOrNull { it.id == profile.selectedShipId } ?: content.ships.first()
     val selectedAccent = shipAccent(selectedShip.id)
     val pendingMissions = profile.activeMissions.count { !it.claimed }
@@ -302,7 +347,7 @@ private fun HomeScreen(
                 profile = profile,
                 selectedShip = selectedShip,
                 accent = selectedAccent,
-                onLaunch = { onNavigate(Route.Game) },
+                onLaunch = { onNavigate(Route.Operations) },
                 onOpenLab = { onNavigate(Route.Lab) },
             )
 
@@ -313,9 +358,9 @@ private fun HomeScreen(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 InsightCard("Archive rank", profile.archiveRank.toString(), PampaCyan)
-                InsightCard("Pending ops", pendingMissions.toString(), PampaAmber)
-                InsightCard("Ships online", profile.unlockTree.unlockedShipIds.size.toString(), PampaMint)
-                InsightCard("Codex", "${profile.unlockTree.codexBiomeIds.size + profile.unlockTree.codexEnemyIds.size}", PampaLavender)
+                InsightCard("Pending ops", pendingMissions.toString(), ui.amberArgb.asColor())
+                InsightCard("Ships online", profile.unlockTree.unlockedShipIds.size.toString(), ui.mintArgb.asColor())
+                InsightCard("Codex", "${profile.unlockTree.codexBiomeIds.size + profile.unlockTree.codexEnemyIds.size}", ui.lavenderArgb.asColor())
             }
 
             SectionHeader(
@@ -332,6 +377,7 @@ private fun HomeScreen(
                     accent = shipAccent(ship.id),
                     unlocked = unlocked,
                     selected = selected,
+                    requirement = shipUnlockRequirement(ship.id),
                     onClick = { onSelectShip(ship.id) },
                 )
             }
@@ -344,14 +390,14 @@ private fun HomeScreen(
                 MenuTile(
                     title = "Laboratorio",
                     body = "Spendi crediti in moduli permanenti e rendi piu stabili le run.",
-                    accent = PampaAmber,
+                    accent = ui.amberArgb.asColor(),
                     modifier = Modifier.weight(1f),
                     onClick = { onNavigate(Route.Lab) },
                 )
                 MenuTile(
                     title = "Codex",
                     body = "Biomi, elites e boss gia incontrati dall'account.",
-                    accent = PampaLavender,
+                    accent = ui.lavenderArgb.asColor(),
                     modifier = Modifier.weight(1f),
                     onClick = { onNavigate(Route.Codex) },
                 )
@@ -360,14 +406,14 @@ private fun HomeScreen(
                 MenuTile(
                     title = "Missioni",
                     body = "Milestone persistenti con premi gia riversati nel profilo.",
-                    accent = PampaMint,
+                    accent = ui.mintArgb.asColor(),
                     modifier = Modifier.weight(1f),
                     onClick = { onNavigate(Route.Missions) },
                 )
                 MenuTile(
                     title = "Cronologia",
                     body = "Ultime run, score e avanzamento archivio.",
-                    accent = PampaCyan,
+                    accent = ui.cyanArgb.asColor(),
                     modifier = Modifier.weight(1f),
                     onClick = { onNavigate(Route.History) },
                 )
@@ -375,17 +421,17 @@ private fun HomeScreen(
             MenuTile(
                 title = "Impostazioni",
                 body = "Grafica, layout touch, audio, haptics e accessibilita.",
-                accent = PampaCyan,
+                accent = ui.cyanArgb.asColor(),
                 modifier = Modifier.fillMaxWidth(),
                 icon = Icons.Rounded.Settings,
                 onClick = { onNavigate(Route.Settings) },
             )
 
-            GlassPanel(accent = PampaAmber) {
-                Text("Field note", color = PampaAmber, fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
+            GlassPanel(accent = ui.amberArgb.asColor()) {
+                Text("Field note", color = ui.amberArgb.asColor(), fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
                 Text(
                     text = "Portrait e landscape sono entrambi supportati. In portrait il gioco resta leggibile, in landscape respira meglio.",
-                    color = PampaText,
+                    color = ui.textArgb.asColor(),
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
@@ -407,6 +453,7 @@ private fun HeroPoster(
     onLaunch: () -> Unit,
     onOpenLab: () -> Unit,
 ) {
+    val ui = chrome()
     GlassPanel(
         modifier = Modifier
             .fillMaxWidth()
@@ -425,25 +472,25 @@ private fun HeroPoster(
                 StatusChip(text = "ARCHIVE // RANK ${profile.archiveRank}", accent = accent)
                 Text(
                     text = "PAMPA STAR SHOOTER",
-                    color = PampaText,
+                    color = ui.textArgb.asColor(),
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Black,
                     fontSize = 34.sp,
                     lineHeight = 36.sp,
                 )
                 Text(
-                    text = "Arena survival mobile-first con build piu forti, boss piu leggibili e una shell molto piu curata.",
-                    color = PampaMuted,
+                    text = "Arena survival mobile-first con mutatori pre-run, VFX piu netti e una shell piu curata.",
+                    color = ui.mutedArgb.asColor(),
                     style = MaterialTheme.typography.bodyLarge,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    StatusChip("Best wave ${profile.bestWave}", PampaAmber)
-                    StatusChip("${profile.credits} crediti", PampaMint)
+                    StatusChip("Best wave ${profile.bestWave}", ui.amberArgb.asColor())
+                    StatusChip("${profile.credits} crediti", ui.mintArgb.asColor())
                 }
                 GlassPanel(accent = accent, modifier = Modifier.fillMaxWidth()) {
                     Text(selectedShip.label.uppercase(), color = accent, fontWeight = FontWeight.Black, fontSize = 12.sp, letterSpacing = 1.2.sp)
-                    Text(selectedShip.subtitle, color = PampaText, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                    Text(selectedShip.passiveText, color = PampaMuted, style = MaterialTheme.typography.bodyMedium)
+                    Text(selectedShip.subtitle, color = ui.textArgb.asColor(), fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Text(selectedShip.passiveText, color = ui.mutedArgb.asColor(), style = MaterialTheme.typography.bodyMedium)
                 }
                 Column(
                     modifier = Modifier.fillMaxWidth(),
@@ -458,7 +505,7 @@ private fun HeroPoster(
                     ) {
                         Icon(Icons.Rounded.PlayArrow, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Avvia run", fontWeight = FontWeight.Bold)
+                        Text("Open operations", fontWeight = FontWeight.Bold)
                     }
                     OutlinedButton(
                         onClick = onOpenLab,
@@ -481,6 +528,7 @@ private fun ShipPoster(
     accent: Color,
     shipLabel: String,
 ) {
+    val ui = chrome()
     Box(
         modifier = Modifier
             .width(128.dp)
@@ -519,7 +567,7 @@ private fun ShipPoster(
                     .width(50.dp)
                     .height(18.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(PampaText),
+                    .background(ui.textArgb.asColor()),
             )
             Box(
                 modifier = Modifier
@@ -528,7 +576,7 @@ private fun ShipPoster(
                     .width(36.dp)
                     .height(12.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(PampaAmber),
+                    .background(ui.amberArgb.asColor()),
             )
         }
         Column(
@@ -538,7 +586,7 @@ private fun ShipPoster(
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Text("CURRENT FRAME", color = accent, fontWeight = FontWeight.Bold, fontSize = 10.sp, letterSpacing = 1.sp)
-            Text(shipLabel, color = PampaText, fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace, fontSize = 18.sp)
+            Text(shipLabel, color = ui.textArgb.asColor(), fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace, fontSize = 18.sp)
         }
     }
 }
@@ -549,9 +597,10 @@ private fun InsightCard(
     value: String,
     accent: Color,
 ) {
+    val ui = chrome()
     GlassPanel(modifier = Modifier.width(148.dp), accent = accent) {
         Text(label.uppercase(), color = accent, fontWeight = FontWeight.Bold, fontSize = 11.sp, letterSpacing = 1.sp)
-        Text(value, color = PampaText, fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace, fontSize = 28.sp)
+        Text(value, color = ui.textArgb.asColor(), fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace, fontSize = 28.sp)
     }
 }
 
@@ -560,9 +609,10 @@ private fun SectionHeader(
     title: String,
     subtitle: String,
 ) {
+    val ui = chrome()
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(title.uppercase(), color = PampaCyan, fontWeight = FontWeight.Black, fontSize = 12.sp, letterSpacing = 1.4.sp)
-        Text(subtitle, color = PampaMuted, style = MaterialTheme.typography.bodyMedium)
+        Text(title.uppercase(), color = ui.cyanArgb.asColor(), fontWeight = FontWeight.Black, fontSize = 12.sp, letterSpacing = 1.4.sp)
+        Text(subtitle, color = ui.mutedArgb.asColor(), style = MaterialTheme.typography.bodyMedium)
     }
 }
 
@@ -574,8 +624,10 @@ private fun ShipCard(
     accent: Color,
     unlocked: Boolean,
     selected: Boolean,
+    requirement: String,
     onClick: () -> Unit,
 ) {
+    val ui = chrome()
     GlassPanel(
         modifier = Modifier
             .fillMaxWidth()
@@ -595,9 +647,12 @@ private fun ShipCard(
             verticalAlignment = Alignment.Top,
         ) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(label, color = PampaText, fontWeight = FontWeight.Black, fontSize = 20.sp)
-                Text(subtitle, color = PampaMuted, style = MaterialTheme.typography.bodyMedium)
+                Text(label, color = ui.textArgb.asColor(), fontWeight = FontWeight.Black, fontSize = 20.sp)
+                Text(subtitle, color = ui.mutedArgb.asColor(), style = MaterialTheme.typography.bodyMedium)
                 Text(passive, color = Color(0xFFD6E6F2), style = MaterialTheme.typography.bodyMedium)
+                if (!unlocked) {
+                    Text(requirement, color = ui.amberArgb.asColor(), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                }
             }
             StatusChip(
                 text = when {
@@ -605,7 +660,7 @@ private fun ShipCard(
                     selected -> "Selected"
                     else -> "Ready"
                 },
-                accent = if (selected) accent else PampaAmber,
+                accent = if (selected) accent else ui.amberArgb.asColor(),
             )
         }
     }
@@ -620,12 +675,13 @@ private fun MenuTile(
     icon: ImageVector? = null,
     onClick: () -> Unit,
 ) {
+    val ui = chrome()
     GlassPanel(modifier = modifier.clickable(onClick = onClick), accent = accent) {
         if (icon != null) {
             Icon(icon, contentDescription = null, tint = accent)
         }
-        Text(title, color = PampaText, fontWeight = FontWeight.Black, fontSize = 18.sp)
-        Text(body, color = PampaMuted, style = MaterialTheme.typography.bodyMedium)
+        Text(title, color = ui.textArgb.asColor(), fontWeight = FontWeight.Black, fontSize = 18.sp)
+        Text(body, color = ui.mutedArgb.asColor(), style = MaterialTheme.typography.bodyMedium)
     }
 }
 
@@ -634,6 +690,7 @@ private fun StatusChip(
     text: String,
     accent: Color = PampaCyan,
 ) {
+    val ui = chrome()
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(999.dp))
@@ -641,7 +698,7 @@ private fun StatusChip(
             .border(1.dp, accent.copy(alpha = 0.4f), RoundedCornerShape(999.dp))
             .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
-        Text(text, color = PampaText, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+        Text(text, color = ui.textArgb.asColor(), fontWeight = FontWeight.Bold, fontSize = 12.sp)
     }
 }
 
@@ -649,6 +706,7 @@ private fun StatusChip(
 private fun OnboardingOverlay(
     onDismiss: () -> Unit,
 ) {
+    val ui = chrome()
     Surface(modifier = Modifier.fillMaxSize(), color = Color(0xCC03070D)) {
         Box(
             modifier = Modifier
@@ -656,11 +714,11 @@ private fun OnboardingOverlay(
                 .padding(22.dp),
             contentAlignment = Alignment.Center,
         ) {
-            GlassPanel(modifier = Modifier.fillMaxWidth(), accent = PampaAmber) {
-                Text("FIRST FLIGHT", color = PampaAmber, fontWeight = FontWeight.Black, fontSize = 12.sp, letterSpacing = 1.6.sp)
+            GlassPanel(modifier = Modifier.fillMaxWidth(), accent = ui.amberArgb.asColor()) {
+                Text("FIRST FLIGHT", color = ui.amberArgb.asColor(), fontWeight = FontWeight.Black, fontSize = 12.sp, letterSpacing = 1.6.sp)
                 Text(
                     text = "Muovi la nave a sinistra, usa le abilita a destra e fermati solo quando il gioco ti offre carte davvero forti.",
-                    color = PampaText,
+                    color = ui.textArgb.asColor(),
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Black,
                     fontSize = 24.sp,
@@ -672,7 +730,7 @@ private fun OnboardingOverlay(
                 FilledTonalButton(
                     onClick = onDismiss,
                     modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.filledTonalButtonColors(containerColor = PampaAmber, contentColor = Color.Black),
+                    colors = ButtonDefaults.filledTonalButtonColors(containerColor = ui.amberArgb.asColor(), contentColor = Color.Black),
                 ) {
                     Text("Entriamo in hangar", fontWeight = FontWeight.Bold)
                 }
@@ -686,9 +744,189 @@ private fun TutorialTip(
     title: String,
     body: String,
 ) {
-    GlassPanel(accent = PampaCyan) {
-        Text(title.uppercase(), color = PampaCyan, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-        Text(body, color = PampaMuted, style = MaterialTheme.typography.bodyMedium)
+    val ui = chrome()
+    GlassPanel(accent = ui.cyanArgb.asColor()) {
+        Text(title.uppercase(), color = ui.cyanArgb.asColor(), fontWeight = FontWeight.Bold, fontSize = 11.sp)
+        Text(body, color = ui.mutedArgb.asColor(), style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+private fun shipUnlockRequirement(shipId: String): String = when (shipId) {
+    DefaultGameContent.ShipWarden -> "Unlock at wave 4."
+    DefaultGameContent.ShipSpecter -> "Unlock at wave 8 or after 3 bosses."
+    else -> "Starter frame."
+}
+
+@Composable
+private fun OperationsScreen(
+    profile: PlayerProfile,
+    content: GameContentBundle,
+    selectedModifierIds: List<String>,
+    onBack: () -> Unit,
+    onModifierChange: (List<String>) -> Unit,
+    onLaunch: (List<String>) -> Unit,
+) {
+    val ui = chrome()
+    val ship = content.ships.firstOrNull { it.id == profile.selectedShipId } ?: content.ships.first()
+    val accent = shipAccent(ship.id)
+    val unlockedModifierIds = content.runModifiers
+        .filter { profile.archiveRank >= it.requiredArchiveRank }
+        .map { it.id }
+        .toSet()
+    val selected = selectedModifierIds.filter { it in unlockedModifierIds }.take(2)
+    val scoreMultiplier = selected.fold(1f) { acc, modifierId ->
+        acc * (content.runModifiers.firstOrNull { it.id == modifierId }?.scoreMultiplier ?: 1f)
+    }
+
+    PosterScaffold(
+        title = "Operations",
+        subtitle = "Configure ship, mutators, and score risk before the run.",
+        onBack = onBack,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            GlassPanel(accent = accent) {
+                StatusChip("SELECTED FRAME", accent)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(ship.label, color = ui.textArgb.asColor(), fontWeight = FontWeight.Black, fontSize = 28.sp)
+                        Text(ship.subtitle, color = ui.mutedArgb.asColor(), style = MaterialTheme.typography.bodyLarge)
+                        Text(ship.passiveText, color = ui.textArgb.asColor(), style = MaterialTheme.typography.bodyMedium)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            StatusChip("Move ${ship.moveSpeed.toInt()}", accent)
+                            StatusChip("Hull ${ship.maxHp.toInt()}", ui.amberArgb.asColor())
+                            StatusChip("Pulse ${ship.pulseCooldown.toInt()}s", ui.lavenderArgb.asColor())
+                        }
+                    }
+                    Image(
+                        painter = painterResource(
+                            when (ship.id) {
+                                DefaultGameContent.ShipWarden -> GameAndroidR.drawable.fx_ship_warden
+                                DefaultGameContent.ShipSpecter -> GameAndroidR.drawable.fx_ship_specter
+                                else -> GameAndroidR.drawable.fx_ship_striker
+                            },
+                        ),
+                        contentDescription = null,
+                        modifier = Modifier.size(92.dp),
+                    )
+                }
+            }
+
+            GlassPanel(accent = ui.cyanArgb.asColor()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("RUN MUTATORS", color = ui.textArgb.asColor(), fontWeight = FontWeight.Black, fontSize = 22.sp)
+                        Text("Select up to 2 unlocked mutators.", color = ui.mutedArgb.asColor())
+                    }
+                    StatusChip("${selected.size}/2 selected", ui.cyanArgb.asColor())
+                }
+                content.runModifiers.forEach { modifier ->
+                    val unlocked = profile.archiveRank >= modifier.requiredArchiveRank
+                    val isSelected = modifier.id in selected
+                    ModifierCard(
+                        modifierDef = modifier,
+                        unlocked = unlocked,
+                        selected = isSelected,
+                        onToggle = {
+                            if (!unlocked) return@ModifierCard
+                            val next = when {
+                                isSelected -> selected - modifier.id
+                                selected.size >= 2 -> selected.drop(1) + modifier.id
+                                else -> selected + modifier.id
+                            }
+                            onModifierChange(next)
+                        },
+                    )
+                }
+            }
+
+            GlassPanel(accent = ui.amberArgb.asColor()) {
+                Text("RISK PREVIEW", color = ui.amberArgb.asColor(), fontWeight = FontWeight.Black, fontSize = 20.sp)
+                Text("Projected score multiplier and current mission pressure for the next run.", color = ui.mutedArgb.asColor())
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    StatusChip("x${"%.2f".format(scoreMultiplier)} score", ui.amberArgb.asColor())
+                    StatusChip("Rank ${profile.archiveRank}", accent)
+                    StatusChip("${profile.activeMissions.count { !it.claimed }} active ops", ui.mintArgb.asColor())
+                }
+            }
+
+            Button(
+                onClick = { onLaunch(selected) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = Color.Black),
+            ) {
+                Icon(Icons.Rounded.PlayArrow, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Launch run", fontWeight = FontWeight.Bold)
+            }
+            Spacer(modifier = Modifier.navigationBarsPadding())
+        }
+    }
+}
+
+@Composable
+private fun ModifierCard(
+    modifierDef: RunModifier,
+    unlocked: Boolean,
+    selected: Boolean,
+    onToggle: () -> Unit,
+) {
+    val ui = chrome()
+    val accent = when (modifierDef.id) {
+        "dense_swarm" -> ui.cyanArgb.asColor()
+        "glass_drive" -> ui.lavenderArgb.asColor()
+        else -> ui.amberArgb.asColor()
+    }
+    GlassPanel(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = unlocked, onClick = onToggle),
+        accent = if (selected) accent else accent.copy(alpha = 0.58f),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Image(
+                painter = painterResource(GameAndroidR.drawable.fx_badge_modifier),
+                contentDescription = null,
+                modifier = Modifier.size(44.dp),
+            )
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(modifierDef.label, color = ui.textArgb.asColor(), fontWeight = FontWeight.Black, fontSize = 18.sp)
+                Text(modifierDef.description, color = ui.mutedArgb.asColor())
+                Text(
+                    if (unlocked) "Risk ${modifierDef.riskLabel} | x${"%.2f".format(modifierDef.scoreMultiplier)} score"
+                    else "Unlock at archive rank ${modifierDef.requiredArchiveRank}",
+                    color = accent,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                )
+            }
+            StatusChip(
+                text = when {
+                    selected -> "Queued"
+                    unlocked -> "Ready"
+                    else -> "Locked"
+                },
+                accent = accent,
+            )
+        }
     }
 }
 
@@ -959,6 +1197,7 @@ private fun FeatureCard(
     accent: Color,
     trailing: (@Composable () -> Unit)? = null,
 ) {
+    val ui = chrome()
     GlassPanel(modifier = Modifier.fillMaxWidth(), accent = accent) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -966,8 +1205,8 @@ private fun FeatureCard(
             verticalAlignment = Alignment.Top,
         ) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(title, color = PampaText, fontWeight = FontWeight.Black, fontSize = 18.sp)
-                Text(body, color = PampaMuted)
+                Text(title, color = ui.textArgb.asColor(), fontWeight = FontWeight.Black, fontSize = 18.sp)
+                Text(body, color = ui.mutedArgb.asColor())
                 Text(meta, color = accent, fontWeight = FontWeight.Bold, fontSize = 12.sp)
             }
             if (trailing != null) {
@@ -983,12 +1222,13 @@ private fun ProgressBar(
     ratio: Float,
     accent: Color,
 ) {
+    val ui = chrome()
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .height(12.dp)
             .clip(RoundedCornerShape(999.dp))
-            .background(Color(0x40131D28)),
+            .background(ui.panelBottomArgb.asColor().copy(alpha = 0.32f)),
     ) {
         Box(
             modifier = Modifier
@@ -1005,20 +1245,21 @@ private fun SettingSwitch(
     checked: Boolean,
     onChecked: (Boolean) -> Unit,
 ) {
+    val ui = chrome()
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(22.dp))
-            .background(Color(0x32101822))
+            .background(ui.panelTopArgb.asColor().copy(alpha = 0.22f))
             .padding(horizontal = 14.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, color = PampaText)
+        Text(label, color = ui.textArgb.asColor())
         Switch(
             checked = checked,
             onCheckedChange = onChecked,
-            colors = SwitchDefaults.colors(checkedThumbColor = PampaText, checkedTrackColor = PampaCyan),
+            colors = SwitchDefaults.colors(checkedThumbColor = ui.textArgb.asColor(), checkedTrackColor = ui.cyanArgb.asColor()),
         )
     }
 }
@@ -1030,22 +1271,23 @@ private fun SettingSlider(
     range: ClosedFloatingPointRange<Float> = 0f..1f,
     onValueChanged: (Float) -> Unit,
 ) {
+    val ui = chrome()
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(22.dp))
-            .background(Color(0x32101822))
+            .background(ui.panelTopArgb.asColor().copy(alpha = 0.22f))
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text("$label: ${"%.2f".format(value)}", color = PampaText)
+        Text("$label: ${"%.2f".format(value)}", color = ui.textArgb.asColor())
         Slider(
             value = value,
             onValueChange = onValueChanged,
             valueRange = range,
             colors = SliderDefaults.colors(
-                thumbColor = PampaCyan,
-                activeTrackColor = PampaCyan,
+                thumbColor = ui.cyanArgb.asColor(),
+                activeTrackColor = ui.cyanArgb.asColor(),
                 inactiveTrackColor = Color(0x40293A4A),
             ),
         )

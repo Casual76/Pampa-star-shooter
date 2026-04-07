@@ -1,8 +1,12 @@
 package com.antigravity.pampastarshooter.core.engine
 
+import com.antigravity.pampastarshooter.core.content.ContentRepository
 import com.antigravity.pampastarshooter.core.content.DefaultGameContent
+import com.antigravity.pampastarshooter.core.model.InputSnapshot
 import com.antigravity.pampastarshooter.core.model.PlayerProfile
 import com.antigravity.pampastarshooter.core.model.RunConfig
+import com.antigravity.pampastarshooter.core.model.VisualEffectKind
+import com.antigravity.pampastarshooter.core.model.applyRunResult
 import kotlin.math.abs
 import kotlin.random.Random
 import kotlin.test.Test
@@ -98,6 +102,62 @@ class PampaGameEngineTest {
         assertTrue(DefaultGameContent.ShipSpecter in result.unlockedShipIds)
     }
 
+    @Test
+    fun dashAndPulseEmitVisualFxSnapshots() {
+        val engine = PampaGameEngine(repository)
+        engine.startRun(
+            RunConfig(shipId = DefaultGameContent.ShipStriker, seed = 7L),
+            profile,
+        )
+
+        engine.submitInput(InputSnapshot(movement = com.antigravity.pampastarshooter.core.model.Vector2(1f, 0f), dashPressed = true))
+        engine.step(0.016f)
+        val dashSnapshot = engine.currentSnapshot()
+        assertTrue(dashSnapshot.visualFx.effects.any { it.kind == VisualEffectKind.Dash })
+        assertTrue(dashSnapshot.visualFx.dashAlpha > 0f)
+
+        engine.submitInput(InputSnapshot(pulsePressed = true))
+        engine.step(0.016f)
+        val pulseSnapshot = engine.currentSnapshot()
+        assertTrue(pulseSnapshot.visualFx.effects.any { it.kind == VisualEffectKind.Pulse })
+    }
+
+    @Test
+    fun wardenShieldAndMineEmitVisualFxSnapshots() {
+        val engine = PampaGameEngine(repository)
+        engine.startRun(
+            RunConfig(shipId = DefaultGameContent.ShipWarden, seed = 9L),
+            profile.copy(selectedShipId = DefaultGameContent.ShipWarden),
+        )
+
+        engine.submitInput(InputSnapshot(shieldPressed = true))
+        engine.step(0.016f)
+        val shieldSnapshot = engine.currentSnapshot()
+        assertTrue(shieldSnapshot.visualFx.effects.any { it.kind == VisualEffectKind.Shield })
+        assertTrue(shieldSnapshot.visualFx.shieldAlpha > 0f)
+
+        engine.submitInput(InputSnapshot(minePressed = true))
+        engine.step(0.016f)
+        val mineSnapshot = engine.currentSnapshot()
+        assertTrue(mineSnapshot.visualFx.effects.any { it.kind == VisualEffectKind.Mine })
+    }
+
+    @Test
+    fun completedMetaMissionRotatesToNextPoolEntry() {
+        val rotatedProfile = DefaultGameContent.starterProfile().copy(totalRuns = 4)
+        val updated = rotatedProfile.applyRunResult(
+            result = newWorld().run {
+                finishRun("Archive")
+                finalResult!!
+            },
+            content = content,
+        )
+
+        assertTrue(updated.unlockTree.completedMetaMissionIds.contains("meta_runs_5"))
+        assertTrue(updated.activeMissions.any { it.id == "meta_boss_4" })
+        assertTrue(updated.activeMissions.none { it.id == "meta_runs_5" && it.claimed })
+    }
+
     private fun newWorld(profile: PlayerProfile = this.profile): GameWorld = GameWorld(
         content = content,
         config = RunConfig(
@@ -107,4 +167,8 @@ class PampaGameEngineTest {
         profile = profile,
         random = Random(42L),
     )
+
+    private val repository = object : ContentRepository {
+        override fun load() = content
+    }
 }

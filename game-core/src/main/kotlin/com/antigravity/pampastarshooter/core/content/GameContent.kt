@@ -431,9 +431,9 @@ object DefaultGameContent {
             AffixDef("draining", "Draining", 1.2f, 1.02f, 1.18f, 0xFF9BB3FF, extraContactDamage = 5f),
         ),
         runModifiers = listOf(
-            RunModifier("dense_swarm", "Dense Swarm", "Piu nemici, piu ricompense.", 1.18f),
-            RunModifier("glass_drive", "Glass Drive", "Più danni inflitti e subiti.", 1.24f),
-            RunModifier("long_burn", "Long Burn", "Wave più lunghe, score bonus.", 1.20f),
+            RunModifier("dense_swarm", "Dense Swarm", "More enemies, better rewards.", 1.18f, requiredArchiveRank = 2, riskLabel = "Swarm"),
+            RunModifier("glass_drive", "Glass Drive", "Higher damage dealt and received.", 1.24f, requiredArchiveRank = 4, riskLabel = "Glass"),
+            RunModifier("long_burn", "Long Burn", "Longer waves with steadier pressure.", 1.20f, requiredArchiveRank = 6, riskLabel = "Endurance"),
         ),
         worldEvents = listOf(
             WorldEventDef("ion_storm", "Ion Storm", "Più elite e cadenza di spawn accelerata.", 18f, spawnRateMultiplier = 1.25f, creditMultiplier = 1.15f),
@@ -452,6 +452,7 @@ object DefaultGameContent {
                 "cache" to 0,
                 "reroll" to 0,
             ),
+            nextMetaMissionIndex = 3,
         ),
         activeMissions = create().metaMissionPool.take(3).map(::MissionState),
         selectedShipId = ShipStriker,

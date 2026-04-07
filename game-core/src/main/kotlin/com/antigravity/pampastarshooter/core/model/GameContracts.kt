@@ -48,6 +48,8 @@ data class RunModifier(
     val label: String,
     val description: String,
     val scoreMultiplier: Float,
+    val requiredArchiveRank: Int = 1,
+    val riskLabel: String = "",
 )
 
 @Serializable
@@ -56,6 +58,8 @@ data class UnlockTree(
     val permanentModules: Map<String, Int> = emptyMap(),
     val codexEnemyIds: Set<String> = emptySet(),
     val codexBiomeIds: Set<String> = emptySet(),
+    val completedMetaMissionIds: Set<String> = emptySet(),
+    val nextMetaMissionIndex: Int = 0,
 )
 
 @Serializable
@@ -156,6 +160,7 @@ data class InputSnapshot(
 )
 
 data class PlayerSnapshot(
+    val shipId: String,
     val position: Vector2,
     val radius: Float,
     val hp: Float,
@@ -207,6 +212,36 @@ data class PickupSnapshot(
     val radius: Float,
     val color: Long,
     val kind: String,
+)
+
+enum class VisualEffectKind {
+    Dash,
+    Pulse,
+    Shield,
+    Mine,
+    Hit,
+    Death,
+    Pickup,
+}
+
+data class VisualEffectSnapshot(
+    val id: Long,
+    val kind: VisualEffectKind,
+    val position: Vector2,
+    val radius: Float,
+    val color: Long,
+    val alpha: Float,
+    val rotationDegrees: Float = 0f,
+    val direction: Vector2 = Vector2.Zero,
+)
+
+data class VisualFxSnapshot(
+    val cameraShake: Float = 0f,
+    val damageFlash: Float = 0f,
+    val dashAlpha: Float = 0f,
+    val shieldAlpha: Float = 0f,
+    val overdriveAlpha: Float = 0f,
+    val effects: List<VisualEffectSnapshot> = emptyList(),
 )
 
 data class WarningSnapshot(
@@ -274,6 +309,7 @@ data class FrameSnapshot(
     val projectiles: List<ProjectileSnapshot> = emptyList(),
     val particles: List<ParticleSnapshot> = emptyList(),
     val pickups: List<PickupSnapshot> = emptyList(),
+    val visualFx: VisualFxSnapshot = VisualFxSnapshot(),
     val hud: HudSnapshot = HudSnapshot("", "", 1, "", 0, 0, 0, 0, null),
     val warnings: List<WarningSnapshot> = emptyList(),
     val runMissions: List<MissionSnapshot> = emptyList(),
@@ -319,7 +355,23 @@ fun PlayerProfile.applyRunResult(
         codexBiomeIds = unlockTree.codexBiomeIds + result.discoveredBiomeIds,
     )
 
-    var updatedMissions = activeMissions.map { mission ->
+    val existingMissionIds = activeMissions.map { it.id }.toSet()
+    val normalizedMissionCursor = maxOf(
+        updatedUnlocks.nextMetaMissionIndex,
+        content.metaMissionPool.indexOfLast { it.id in existingMissionIds } + 1,
+    ).coerceAtLeast(0)
+    val seededMissions = if (activeMissions.isEmpty()) {
+        seedMetaMissions(
+            content = content,
+            completedIds = updatedUnlocks.completedMetaMissionIds,
+            startingCursor = normalizedMissionCursor,
+            slots = 3,
+        ).first
+    } else {
+        activeMissions
+    }
+
+    var updatedMissions = seededMissions.map { mission ->
         val progressValue = when (mission.metric) {
             MissionMetric.Runs -> totalRuns + 1
             MissionMetric.Kills -> totalKills + result.kills
@@ -333,23 +385,33 @@ fun PlayerProfile.applyRunResult(
         )
     }
 
+    val claimedMissionIds = updatedUnlocks.completedMetaMissionIds.toMutableSet()
     updatedMissions = updatedMissions.map { mission ->
         if (mission.completed && !mission.claimed) {
             newCredits += mission.rewardCredits
             newArchiveXp += mission.rewardArchiveXp
+            claimedMissionIds += mission.id
             mission.copy(claimed = true)
         } else {
             mission
         }
     }
 
+    val rotated = rotateMetaMissions(
+        current = updatedMissions,
+        content = content,
+        completedIds = claimedMissionIds,
+        startingCursor = normalizedMissionCursor,
+    )
+    updatedMissions = rotated.first
+    val updatedUnlockState = updatedUnlocks.copy(
+        completedMetaMissionIds = claimedMissionIds,
+        nextMetaMissionIndex = rotated.second,
+    )
+
     while (newArchiveXp >= rankXpRequirement(newArchiveRank)) {
         newArchiveXp -= rankXpRequirement(newArchiveRank)
         newArchiveRank++
-    }
-
-    if (updatedMissions.isEmpty()) {
-        updatedMissions = content.metaMissionPool.take(3).map(::MissionState)
     }
 
     return copy(
@@ -362,7 +424,74 @@ fun PlayerProfile.applyRunResult(
         totalKills = totalKills + result.kills,
         totalBosses = totalBosses + result.bossesDefeated,
         totalCreditsEarned = totalCreditsEarned + result.creditsEarned,
-        unlockTree = updatedUnlocks,
+        unlockTree = updatedUnlockState,
         activeMissions = updatedMissions,
     )
+}
+
+private fun seedMetaMissions(
+    content: GameContentBundle,
+    completedIds: Set<String>,
+    startingCursor: Int,
+    slots: Int,
+): Pair<List<MissionState>, Int> {
+    var cursor = startingCursor
+    val picked = mutableListOf<MissionState>()
+    repeat(slots) {
+        val next = nextMissionFromPool(content.metaMissionPool, completedIds, picked.map { it.id }.toSet(), cursor)
+        val nextMission = next.first
+        if (nextMission != null) {
+            picked += MissionState(nextMission)
+            cursor = next.second
+        }
+    }
+    return picked to cursor
+}
+
+private fun rotateMetaMissions(
+    current: List<MissionState>,
+    content: GameContentBundle,
+    completedIds: Set<String>,
+    startingCursor: Int,
+): Pair<List<MissionState>, Int> {
+    var cursor = startingCursor
+    val rotated = current.toMutableList()
+    current.forEachIndexed { index, mission ->
+        if (!mission.claimed) return@forEachIndexed
+        val activeIds = rotated.mapNotNullIndexed { activeIndex, activeMission ->
+            if (activeIndex == index) null else activeMission.id
+        }.toSet()
+        val replacement = nextMissionFromPool(content.metaMissionPool, completedIds, activeIds, cursor)
+        val replacementMission = replacement.first
+        if (replacementMission != null) {
+            rotated[index] = MissionState(replacementMission)
+            cursor = replacement.second
+        }
+    }
+    return rotated to cursor
+}
+
+private fun nextMissionFromPool(
+    pool: List<com.antigravity.pampastarshooter.core.content.MissionDef>,
+    completedIds: Set<String>,
+    excludedIds: Set<String>,
+    startingCursor: Int,
+): Pair<com.antigravity.pampastarshooter.core.content.MissionDef?, Int> {
+    var cursor = startingCursor.coerceAtLeast(0)
+    while (cursor < pool.size) {
+        val candidate = pool[cursor]
+        cursor++
+        if (candidate.id !in completedIds && candidate.id !in excludedIds) {
+            return candidate to cursor
+        }
+    }
+    return null to cursor
+}
+
+private inline fun <T, R : Any> List<T>.mapNotNullIndexed(transform: (Int, T) -> R?): List<R> {
+    val result = ArrayList<R>(size)
+    forEachIndexed { index, item ->
+        transform(index, item)?.let(result::add)
+    }
+    return result
 }

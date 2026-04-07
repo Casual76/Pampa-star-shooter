@@ -95,6 +95,18 @@ internal data class PickupState(
     val value: Int,
 )
 
+internal data class ActiveVisualEffect(
+    val id: Long,
+    val kind: VisualEffectKind,
+    var position: Vector2,
+    var radius: Float,
+    var color: Long,
+    var ttl: Float,
+    var maxTtl: Float,
+    var rotationDegrees: Float = 0f,
+    var direction: Vector2 = Vector2.Zero,
+)
+
 internal class PlayerState(
     val shipDef: ShipDef,
     position: Vector2,
@@ -190,6 +202,7 @@ internal class GameWorld(
     val particles = mutableListOf<MutableParticle>()
     val pickups = mutableListOf<PickupState>()
     val mines = mutableListOf<ActiveMine>()
+    val visualEffects = mutableListOf<ActiveVisualEffect>()
     val runMissions = content.runMissionPool.shuffled(random).take(3).map(::ActiveRunMission).toMutableList()
     val upgradeStacks = mutableMapOf<String, Int>()
     val discoveredEnemyIds = mutableSetOf<String>()
@@ -220,6 +233,8 @@ internal class GameWorld(
     var projectedArchiveXp: Int = 0
     var pendingUpgradeChoices: List<UpgradeCardDef> = emptyList()
     var rerollsRemaining: Int = 1
+    var cameraShake: Float = 0f
+    var damageFlash: Float = 0f
     var snapshot: FrameSnapshot = FrameSnapshot()
     var finalResult: RunResult? = null
 
@@ -296,6 +311,36 @@ internal class GameWorld(
 
     fun recycleParticle(particle: MutableParticle) {
         particlePool.release(particle)
+    }
+
+    fun pushCameraShake(amount: Float) {
+        cameraShake = max(cameraShake, amount)
+    }
+
+    fun pushDamageFlash(amount: Float = 1f) {
+        damageFlash = max(damageFlash, amount)
+    }
+
+    fun spawnVisualEffect(
+        kind: VisualEffectKind,
+        position: Vector2,
+        radius: Float,
+        color: Long,
+        ttl: Float,
+        rotationDegrees: Float = 0f,
+        direction: Vector2 = Vector2.Zero,
+    ) {
+        visualEffects += ActiveVisualEffect(
+            id = nextId(),
+            kind = kind,
+            position = position,
+            radius = radius,
+            color = color,
+            ttl = ttl,
+            maxTtl = ttl,
+            rotationDegrees = rotationDegrees,
+            direction = direction,
+        )
     }
 
     fun spawnParticles(
@@ -404,6 +449,15 @@ internal class GameWorld(
         )
         enemies += state
         discoveredEnemyIds += def.id
+        if (def.isBoss || def.isMiniBoss || affix != null) {
+            spawnVisualEffect(
+                kind = VisualEffectKind.Pulse,
+                position = spawnPos,
+                radius = if (def.isBoss) 200f else 120f,
+                color = state.color,
+                ttl = if (def.isBoss) 0.5f else 0.28f,
+            )
+        }
     }
 
     private fun randomSpawnPoint(): Vector2 {
@@ -439,7 +493,10 @@ internal class GameWorld(
         if (remaining <= 0f) return
         player.hp -= remaining
         player.invulnerability = 0.4f
+        pushDamageFlash()
+        pushCameraShake((0.2f + remaining / 32f).coerceAtMost(1f))
         spawnParticles(player.position, 0xFFFF7A8E, 8, speed = 180f)
+        spawnVisualEffect(VisualEffectKind.Hit, player.position, 58f, 0xFFFF7A8E, ttl = 0.22f)
         if (player.hp <= 0f) {
             player.hp = 0f
             finishRun("Signal Lost")
@@ -465,6 +522,7 @@ internal class GameWorld(
             warningSubtitle = "${enemy.def.label} neutralizzato."
             warningTime = 2f
             spawnPickup(enemy.position, "credit", 8)
+            pushCameraShake(0.9f)
         }
         if (enemy.def.splitInto != null) {
             repeat(2) {
@@ -475,6 +533,13 @@ internal class GameWorld(
         projectedArchiveXp = calculateProjectedArchiveXp()
         updateRunMissionProgress()
         spawnParticles(enemy.position, enemy.color, count = if (enemy.def.isBoss) 24 else 10, speed = 190f)
+        spawnVisualEffect(
+            kind = VisualEffectKind.Death,
+            position = enemy.position,
+            radius = if (enemy.def.isBoss) 170f else 88f,
+            color = enemy.color,
+            ttl = if (enemy.def.isBoss) 0.48f else 0.32f,
+        )
     }
 
     fun updateRunMissionProgress() {
@@ -666,6 +731,9 @@ internal class GameWorld(
         warningTitle = title
         warningSubtitle = "Run archiviata. Score $score."
         warningTime = 3f
+        pushDamageFlash(0.35f)
+        pushCameraShake(0.75f)
+        spawnVisualEffect(VisualEffectKind.Death, player.position, 190f, shipDef.accentColor, ttl = 0.56f)
         rebuildSnapshot()
     }
 
@@ -677,6 +745,7 @@ internal class GameWorld(
             bounds = bounds,
             elapsedSeconds = elapsedSeconds,
             player = PlayerSnapshot(
+                shipId = shipDef.id,
                 position = player.position,
                 radius = player.radius,
                 hp = player.hp,
@@ -733,6 +802,25 @@ internal class GameWorld(
                     kind = pickup.kind,
                 )
             },
+            visualFx = VisualFxSnapshot(
+                cameraShake = cameraShake,
+                damageFlash = damageFlash,
+                dashAlpha = (player.dashRemaining / 0.22f).coerceIn(0f, 1f),
+                shieldAlpha = (player.shieldRemaining / 4.2f).coerceIn(0f, 1f),
+                overdriveAlpha = (player.overdriveRemaining / player.overdriveDuration.coerceAtLeast(0.001f)).coerceIn(0f, 1f),
+                effects = visualEffects.map { effect ->
+                    VisualEffectSnapshot(
+                        id = effect.id,
+                        kind = effect.kind,
+                        position = effect.position,
+                        radius = effect.radius,
+                        color = effect.color,
+                        alpha = (effect.ttl / effect.maxTtl.coerceAtLeast(0.001f)).coerceIn(0f, 1f),
+                        rotationDegrees = effect.rotationDegrees,
+                        direction = effect.direction,
+                    )
+                },
+            ),
             hud = HudSnapshot(
                 shipLabel = shipDef.label,
                 passiveLabel = shipDef.passiveLabel,
@@ -799,6 +887,8 @@ private class TimingSystem : System {
         world.elapsedSeconds += deltaSeconds
         world.waveElapsed += deltaSeconds
         world.warningTime = max(0f, world.warningTime - deltaSeconds)
+        world.cameraShake = max(0f, world.cameraShake - deltaSeconds * 2.8f)
+        world.damageFlash = max(0f, world.damageFlash - deltaSeconds * 3.6f)
 
         world.player.fireCooldown = max(0f, world.player.fireCooldown - deltaSeconds)
         world.player.dashCooldown = max(0f, world.player.dashCooldown - deltaSeconds)
@@ -909,6 +999,16 @@ private class PlayerCombatSystem : System {
             player.invulnerability = 0.24f
             player.overdriveRemaining = player.overdriveDuration
             world.spawnParticles(player.position, player.shipDef.accentColor, 10, speed = 260f)
+            world.spawnVisualEffect(
+                kind = VisualEffectKind.Dash,
+                position = player.position,
+                radius = 150f,
+                color = player.shipDef.trailColor,
+                ttl = 0.26f,
+                rotationDegrees = atan2(direction.y, direction.x).toFloat() * 180f / PI.toFloat(),
+                direction = direction,
+            )
+            world.pushCameraShake(0.25f)
         }
 
         if (player.dashRemaining > 0f) {
@@ -934,6 +1034,8 @@ private class PlayerCombatSystem : System {
                 }
             }
             world.spawnParticles(player.position, 0xFFAFB6FF, 18, speed = 220f, ttlRange = 0.15f..0.35f)
+            world.spawnVisualEffect(VisualEffectKind.Pulse, player.position, radius, 0xFFAFB6FF, ttl = 0.34f)
+            world.pushCameraShake(0.4f)
         }
 
         if (input.shieldPressed && player.hasShield && player.shieldCooldown <= 0f) {
@@ -941,6 +1043,7 @@ private class PlayerCombatSystem : System {
             player.shieldRemaining = 4.2f
             player.shield = max(player.shield, player.shieldStrength)
             world.spawnParticles(player.position, 0xFF96FFC6, 14, speed = 160f)
+            world.spawnVisualEffect(VisualEffectKind.Shield, player.position, 132f, 0xFF96FFC6, ttl = 0.36f)
         }
 
         if (input.minePressed && player.hasMine && player.mineCooldown <= 0f) {
@@ -952,6 +1055,7 @@ private class PlayerCombatSystem : System {
                 power = 70f + world.moduleLevel("bulwark") * 5f + player.minePowerBonus,
                 ttl = 1.4f,
             )
+            world.spawnVisualEffect(VisualEffectKind.Mine, player.position, 92f, 0xFFFFCF75, ttl = 0.28f)
         }
 
         val target = world.nearestEnemy()
@@ -1063,6 +1167,13 @@ private class EnemySystem : System {
         } else if (enemy.shootCooldown <= 0f) {
             enemy.telegraphRemaining = pattern.telegraphSeconds
             enemy.shootCooldown = enemy.def.shootCooldown ?: 1.4f
+            world.spawnVisualEffect(
+                kind = VisualEffectKind.Pulse,
+                position = enemy.position,
+                radius = enemy.radius + 88f,
+                color = enemy.color,
+                ttl = pattern.telegraphSeconds,
+            )
         }
     }
 
@@ -1082,6 +1193,16 @@ private class EnemySystem : System {
                     consumed = projectile.remainingPierce <= 0
                     projectile.remainingPierce--
                     world.spawnParticles(enemy.position, projectile.color, count = if (projectile.crit) 5 else 3, speed = 100f, ttlRange = 0.08f..0.16f)
+                    world.spawnVisualEffect(
+                        kind = VisualEffectKind.Hit,
+                        position = enemy.position,
+                        radius = if (projectile.crit) 64f else 42f,
+                        color = projectile.color,
+                        ttl = if (projectile.crit) 0.24f else 0.16f,
+                    )
+                    if (projectile.crit) {
+                        world.pushCameraShake(0.16f)
+                    }
                     if (enemy.hp <= 0f) {
                         world.rewardEnemyKill(enemy)
                         enemyIterator.remove()
@@ -1104,6 +1225,7 @@ private class EnemySystem : System {
             if (hitPlayer) {
                 val glassMultiplier = if ("glass_drive" in world.config.modifiers) 1.16f else 1f
                 world.applyPlayerDamage(projectile.damage * glassMultiplier)
+                world.spawnVisualEffect(VisualEffectKind.Hit, world.player.position, 48f, projectile.color, ttl = 0.18f)
             }
             if (hitPlayer || projectile.ttl <= 0f || !inside(world.bounds, projectile.position, 60f)) {
                 hostileIterator.remove()
@@ -1126,6 +1248,8 @@ private class EnemySystem : System {
                     }
                 }
                 world.spawnParticles(mine.position, 0xFFFFCF75, 20, speed = 220f, ttlRange = 0.12f..0.4f)
+                world.spawnVisualEffect(VisualEffectKind.Mine, mine.position, mine.radius, 0xFFFFCF75, ttl = 0.42f)
+                world.pushCameraShake(0.45f)
                 mineIterator.remove()
             }
         }
@@ -1158,6 +1282,13 @@ private class ProgressionSystem : System {
                     }
                     "credit" -> world.creditsEarned += pickup.value
                 }
+                world.spawnVisualEffect(
+                    kind = VisualEffectKind.Pickup,
+                    position = world.player.position,
+                    radius = if (pickup.kind == "xp") 54f else 68f,
+                    color = if (pickup.kind == "xp") 0xFF9FF2FF else 0xFFFFCF75,
+                    ttl = 0.2f,
+                )
                 pickupIterator.remove()
             }
         }
@@ -1176,6 +1307,14 @@ private class CleanupSystem : System {
             if (particle.ttl <= 0f) {
                 particleIterator.remove()
                 world.recycleParticle(particle)
+            }
+        }
+        val effectIterator = world.visualEffects.iterator()
+        while (effectIterator.hasNext()) {
+            val effect = effectIterator.next()
+            effect.ttl -= deltaSeconds
+            if (effect.ttl <= 0f) {
+                effectIterator.remove()
             }
         }
         if (world.queuedEnemySpawns.isNotEmpty()) {

@@ -1,6 +1,8 @@
 package com.antigravity.pampastarshooter.ui
 
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -46,10 +48,12 @@ fun GameScreen(
     container: AppContainer,
     profile: PlayerProfile,
     settings: GameSettings,
+    selectedModifiers: List<String>,
     onExit: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val ui = chrome()
     var frame by remember { mutableStateOf(FrameSnapshot()) }
     var result by remember { mutableStateOf<RunResult?>(null) }
     var surfaceView by remember { mutableStateOf<GameSurfaceView?>(null) }
@@ -68,13 +72,13 @@ fun GameScreen(
         onDispose { surfaceView?.releaseSession() }
     }
 
-    LaunchedEffect(surfaceView, runSeed, profile.selectedShipId, settings.hudLayout) {
+    LaunchedEffect(surfaceView, runSeed, profile.selectedShipId, settings.hudLayout, selectedModifiers) {
         surfaceView?.startRun(
             engine = PampaGameEngine(container.contentRepository),
             config = RunConfig(
                 shipId = profile.selectedShipId,
                 seed = runSeed,
-                modifiers = emptyList(),
+                modifiers = selectedModifiers,
                 hudLayout = settings.hudLayout,
             ),
             profile = profile,
@@ -126,7 +130,7 @@ fun GameScreen(
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black),
+            .background(ui.inkArgb.asColor()),
     ) {
         val isLandscape = maxWidth > maxHeight
         val chromePadding = if (isLandscape) 18.dp else 14.dp
@@ -223,6 +227,7 @@ private fun TopHud(
     frame: FrameSnapshot,
     onBack: () -> Unit,
 ) {
+    val ui = chrome()
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -235,7 +240,7 @@ private fun TopHud(
                     onClick = onBack,
                 )
                 Surface(
-                    color = Color(0x99101822),
+                    color = ui.panelTopArgb.asColor().copy(alpha = 0.72f),
                     shape = RoundedCornerShape(24.dp),
                     tonalElevation = 0.dp,
                 ) {
@@ -245,14 +250,14 @@ private fun TopHud(
                     ) {
                         Text(
                             text = frame.hud.shipLabel.ifBlank { "Striker" },
-                            color = Color.White,
+                            color = ui.textArgb.asColor(),
                             fontWeight = FontWeight.Black,
                             fontFamily = FontFamily.Monospace,
                             fontSize = 20.sp,
                         )
                         Text(
                             text = "Wave ${frame.hud.wave} · ${frame.hud.biomeLabel}",
-                            color = Color(0xFFAAC5D6),
+                            color = ui.mutedArgb.asColor(),
                             fontSize = 13.sp,
                         )
                     }
@@ -265,10 +270,10 @@ private fun TopHud(
             ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     HudChip("Score ${frame.hud.score}")
-                    HudChip("+${frame.hud.archiveXpProjected} XP", accent = Color(0xFFFFB85A))
+                    HudChip("+${frame.hud.archiveXpProjected} XP", accent = ui.amberArgb.asColor())
                 }
-                if (frame.hud.activeEventLabel != null) {
-                    HudChip(frame.hud.activeEventLabel!!, accent = Color(0xFFA7B6FF))
+                frame.hud.activeEventLabel?.let {
+                    HudChip(it, accent = ui.lavenderArgb.asColor())
                 }
                 frame.runMissions.take(2).forEach { mission ->
                     MissionStrip(mission)
@@ -280,6 +285,7 @@ private fun TopHud(
 
 @Composable
 private fun WarningBanner(warning: WarningSnapshot) {
+    val ui = chrome()
     Box(
         modifier = Modifier.fillMaxWidth(),
         contentAlignment = Alignment.Center,
@@ -294,14 +300,14 @@ private fun WarningBanner(warning: WarningSnapshot) {
             ) {
                 Text(
                     text = warning.title.uppercase(),
-                    color = Color(0xFFECF8FF),
+                    color = ui.textArgb.asColor(),
                     fontWeight = FontWeight.Black,
                     letterSpacing = 1.5.sp,
                     fontSize = 13.sp,
                 )
                 Text(
                     text = warning.subtitle,
-                    color = Color(0xFFB7CADA),
+                    color = ui.mutedArgb.asColor(),
                     fontSize = 12.sp,
                 )
             }
@@ -320,6 +326,7 @@ private fun BottomControlDock(
     onShield: () -> Unit,
     onMine: () -> Unit,
 ) {
+    val ui = chrome()
     val player = frame.player
     val dockScale = settings.hudLayout.controlScale
     val joystickFirst = !settings.hudLayout.flipped
@@ -328,7 +335,7 @@ private fun BottomControlDock(
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = Color(0xA20A1119),
+        color = ui.panelBottomArgb.asColor().copy(alpha = 0.8f),
         shape = RoundedCornerShape(if (isLandscape) 30.dp else 28.dp),
     ) {
         if (isLandscape) {
@@ -394,6 +401,7 @@ private fun StatusCluster(
     frame: FrameSnapshot,
     modifier: Modifier = Modifier,
 ) {
+    val ui = chrome()
     val player = frame.player
     Column(
         modifier = modifier,
@@ -407,19 +415,19 @@ private fun StatusCluster(
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
                     text = frame.hud.shipLabel.ifBlank { "Run" },
-                    color = Color.White,
+                    color = ui.textArgb.asColor(),
                     fontWeight = FontWeight.Bold,
                     fontSize = 15.sp,
                 )
                 Text(
                     text = "Kills ${frame.hud.kills} · Credits ${frame.hud.credits}",
-                    color = Color(0xFF9EB2C1),
+                    color = ui.mutedArgb.asColor(),
                     fontSize = 12.sp,
                 )
             }
             Text(
                 text = "Lv.${player?.level ?: 1}",
-                color = Color(0xFFFFD48A),
+                color = ui.amberArgb.asColor(),
                 fontWeight = FontWeight.Black,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 18.sp,
@@ -439,13 +447,14 @@ private fun StatBar(
     accent: Color,
     value: String,
 ) {
+    val ui = chrome()
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Text(label.uppercase(), color = Color(0xFF8EA3B4), fontSize = 11.sp, letterSpacing = 1.sp)
-            Text(value, color = Color.White, fontSize = 11.sp)
+            Text(label.uppercase(), color = ui.mutedArgb.asColor(), fontSize = 11.sp, letterSpacing = 1.sp)
+            Text(value, color = ui.textArgb.asColor(), fontSize = 11.sp)
         }
         Box(
             modifier = Modifier
@@ -473,11 +482,12 @@ private fun JoystickControl(
     modifier: Modifier,
     onMove: (Vector2) -> Unit,
 ) {
+    val ui = chrome()
     Box(
         modifier = modifier
             .clip(CircleShape)
             .background(Color(0x4D16222E))
-            .border(1.dp, Color(0x334CE5FF), CircleShape)
+            .border(1.dp, ui.cyanArgb.asColor().copy(alpha = 0.28f), CircleShape)
             .pointerInput(Unit) {
                 detectDragGestures(
                     onDragStart = { start -> onMove(normalizeDrag(start, size)) },
@@ -494,7 +504,7 @@ private fun JoystickControl(
                 .clip(CircleShape)
                 .background(
                     Brush.radialGradient(
-                        listOf(Color(0xFF5CE7FF), Color(0xFF2D8FA7)),
+                        listOf(ui.cyanArgb.asColor(), Color(0xFF2D8FA7)),
                     ),
                 ),
         )
@@ -544,12 +554,19 @@ private fun AbilityButton(
     onClick: () -> Unit,
     accent: Color = Color(0xFF5CE7FF),
 ) {
+    val ui = chrome()
+    val ready = status == "READY"
+    val readyGlow by animateFloatAsState(
+        targetValue = if (ready) 0.24f else 0.1f,
+        animationSpec = spring(dampingRatio = 0.7f, stiffness = 220f),
+        label = "abilityGlow",
+    )
     FilledTonalButton(
         onClick = onClick,
         modifier = modifier.height(84.dp),
         colors = ButtonDefaults.filledTonalButtonColors(
-            containerColor = Color(0xB0101722),
-            contentColor = Color.White,
+            containerColor = ui.panelTopArgb.asColor().copy(alpha = if (ready) 0.94f else 0.8f),
+            contentColor = ui.textArgb.asColor(),
         ),
         shape = RoundedCornerShape(24.dp),
     ) {
@@ -558,13 +575,13 @@ private fun AbilityButton(
                 modifier = Modifier
                     .size(30.dp)
                     .clip(CircleShape)
-                    .background(accent.copy(alpha = 0.14f)),
+                    .background(accent.copy(alpha = readyGlow)),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(icon, contentDescription = null, tint = accent)
             }
             Text(label, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-            Text(status, fontSize = 11.sp, color = Color(0xFF95A8B8))
+            Text(status, fontSize = 11.sp, color = if (ready) accent else ui.mutedArgb.asColor())
         }
     }
 }
@@ -574,15 +591,19 @@ private fun cooldownLabel(value: Float?): String {
     return if (value <= 0.05f) "READY" else String.format("%.1fs", value)
 }
 
+private fun formatUnlockedShipLabel(id: String): String =
+    id.removePrefix("ship_").replaceFirstChar { it.uppercase() }
+
 @Composable
 private fun SmallActionPill(
     label: String,
     onClick: () -> Unit,
 ) {
+    val ui = chrome()
     FilledTonalButton(
         onClick = onClick,
         colors = ButtonDefaults.filledTonalButtonColors(
-            containerColor = Color(0xE6F2E5FF),
+            containerColor = ui.textArgb.asColor().copy(alpha = 0.92f),
             contentColor = Color(0xFF10141B),
         ),
         shape = RoundedCornerShape(999.dp),
@@ -598,8 +619,9 @@ private fun HudChip(
     text: String,
     accent: Color = Color(0xFF5CE7FF),
 ) {
+    val ui = chrome()
     Surface(
-        color = Color(0x8A101922),
+        color = ui.panelTopArgb.asColor().copy(alpha = 0.72f),
         shape = RoundedCornerShape(999.dp),
     ) {
         Text(
@@ -614,6 +636,7 @@ private fun HudChip(
 
 @Composable
 private fun MissionStrip(mission: MissionSnapshot) {
+    val ui = chrome()
     Surface(
         color = Color(0x8E0D151E),
         shape = RoundedCornerShape(18.dp),
@@ -622,10 +645,10 @@ private fun MissionStrip(mission: MissionSnapshot) {
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             horizontalAlignment = Alignment.End,
         ) {
-            Text(mission.label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text(mission.label, color = ui.textArgb.asColor(), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             Text(
                 "${mission.progress}/${mission.target}",
-                color = if (mission.completed) Color(0xFF8DFFBF) else Color(0xFF9FB5C7),
+                color = if (mission.completed) ui.mintArgb.asColor() else ui.mutedArgb.asColor(),
                 fontSize = 11.sp,
             )
         }
@@ -722,6 +745,7 @@ private fun GameOverOverlay(
     onReplay: () -> Unit,
     onExit: () -> Unit,
 ) {
+    val ui = chrome()
     Surface(modifier = Modifier.fillMaxSize(), color = Color(0xB205080E)) {
         Column(
             modifier = Modifier
@@ -735,16 +759,31 @@ private fun GameOverOverlay(
             ) {
                 Text(
                     text = "Score ${result.score}",
-                    color = Color.White,
+                    color = ui.textArgb.asColor(),
                     fontWeight = FontWeight.Black,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 24.sp,
                 )
                 Text(
-                    text = "+${result.creditsEarned} crediti  ·  +${result.archiveXpEarned} XP",
-                    color = Color(0xFFFFD48A),
+                    text = "+${result.creditsEarned} crediti · +${result.archiveXpEarned} XP",
+                    color = ui.amberArgb.asColor(),
                     fontWeight = FontWeight.Bold,
                 )
+                if (result.config.modifiers.isNotEmpty()) {
+                    Text(
+                        text = "Mutators: ${result.config.modifiers.joinToString()}",
+                        color = ui.mutedArgb.asColor(),
+                        fontSize = 12.sp,
+                    )
+                }
+                if (result.unlockedShipIds.isNotEmpty()) {
+                    Text(
+                        text = "Unlocked: ${result.unlockedShipIds.joinToString(transform = ::formatUnlockedShipLabel)}",
+                        color = ui.mintArgb.asColor(),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                    )
+                }
                 Spacer(Modifier.height(10.dp))
                 FilledTonalButton(onClick = onReplay, modifier = Modifier.fillMaxWidth()) {
                     Text("Nuova run")
@@ -764,6 +803,7 @@ private fun Panel(
     subtitle: String,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val ui = chrome()
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -773,18 +813,18 @@ private fun Panel(
                     listOf(Color(0xF0101721), Color(0xEC090E15)),
                 ),
             )
-            .border(1.dp, Color(0x224CE5FF), RoundedCornerShape(30.dp))
+            .border(1.dp, ui.cyanArgb.asColor().copy(alpha = if (ui.highContrast) 0.42f else 0.14f), RoundedCornerShape(30.dp))
             .padding(22.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
         content = {
             Text(
                 title,
-                color = Color.White,
+                color = ui.textArgb.asColor(),
                 fontWeight = FontWeight.Black,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 26.sp,
             )
-            Text(subtitle, color = Color(0xFFAFBFCD))
+            Text(subtitle, color = ui.mutedArgb.asColor())
             content()
         },
     )
