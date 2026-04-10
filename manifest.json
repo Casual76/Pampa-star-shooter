@@ -1,6 +1,6 @@
 {
     "app": {
-        "id": "Pampa-star-shooter",
+        "id": "pampa-star-shooter",
         "name": "Pampa star shooter",
         "description": "Pampa star shooter Android app",
         "packageName": "com.antigravity.pampastarshooter",
